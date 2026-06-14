@@ -1,13 +1,12 @@
-  // =============================================================
   // MACROPAD - ESP32-S3
-  // =============================================================
+
   // HARDWARE:
   //   Joystick X/Y : IO1 / IO2        Joystick BTN: IO48
   //   Mode Button  : IO13
   //   Key Matrix   : Rows IO9-IO12    Cols IO15,IO7,IO6,IO5
   //   Poti Vol     : IO4              Poti Helligkeit: IO14
   //   TFT Display  : SCK=IO16 MOSI=IO17 RST=IO18 DC=IO8 CS=IO3
-  // =============================================================
+
 
   #include <Arduino.h>
   #include <SPI.h>
@@ -44,9 +43,7 @@
   #define CONSUMER_CONTROL_BROWSER_REFRESH 0x0227
   #endif
 
-  // =============================================================
   // PINS
-  // =============================================================
   #define TFT_CS    3
   #define TFT_DC    8
   #define TFT_MOSI  17
@@ -63,9 +60,8 @@
   const int ROW_PINS[4] = {9, 10, 11, 12};
   const int COL_PINS[4] = {15, 7, 6, 5};
 
-  // =============================================================
+
   // EINSTELLUNGEN
-  // =============================================================
   #define DEBOUNCE_MS       50
 
   // --- Potentiometer (10k Ohm an 3.3V) ---
@@ -91,26 +87,23 @@
   #define JOY_INVERT_Y       1
   #define JOY_SWAP_XY        0    // 1 = X und Y Achsen tauschen
 
-  // =============================================================
+
   // FARBEN (RGB565)
-  // =============================================================
   #define COL_NAVY      0x000F
   #define COL_DARKGRAY  0x4208
   #define COL_MIDGRAY   0x8410
   #define COL_ORANGE    0xFC00
 
-  // =============================================================
+
   // MODI
-  // =============================================================
   enum Mode { GENERAL = 0, EASYEDA = 1, CHILL = 2, GAMING = 3 };
   const char*    MODE_NAMES[]  = {"General", "EasyEDA", "Chill", "Gaming"};
   const uint16_t MODE_COLORS[] = {ST77XX_CYAN, ST77XX_GREEN, ST77XX_MAGENTA, COL_ORANGE};
 
-  // =============================================================
+
   // TASTENBESCHRIFTUNGEN (Landscape 160x128, max 5 Zeichen)
   // Hier kannst du die Labels anpassen
-  // =============================================================
-  const char* KEY_LABELS[4][4][4] = {
+  const char* KEY_LABELS[4][4][4] = { 
     // ---- GENERAL ----
     {{"CHROM", "EXPLR", "SCRSH", "LOCK "},
     {"UNDO",  "REDO",  "COPY",  "PASTE"},
@@ -133,17 +126,14 @@
     {"PTT",   "CROUC", "SPRNT", "PRONE"}}
   };
 
-  // =============================================================
   // HID + DISPLAY OBJEKTE
-  // =============================================================
   USBHIDKeyboard        Keyboard;
   USBHIDMouse           Mouse;
   USBHIDConsumerControl Consumer;
   Adafruit_ST7735       tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
 
-  // =============================================================
+
   // ZUSTAND
-  // =============================================================
   int          currentMode        = GENERAL;
   bool         keyState[4][4]     = {};
   unsigned long keyDebounce[4][4] = {};
@@ -156,9 +146,7 @@
   int sentVol = -1;   // HID-Schritte bereits gesendet (-1 = noch nicht initialisiert)
   int sentBri = -1;
 
-  // =============================================================
   // HID HILFSFUNKTIONEN
-  // =============================================================
   void sendConsumerStep(uint16_t code) {
     Consumer.press(code);
     Consumer.release();
@@ -228,10 +216,8 @@
     Keyboard.write(KEY_RETURN);
   }
 
-  // =============================================================
   // TASTENAKTION - GENERAL MODE
   // Hier kannst du die Aktionen für General-Modus ändern
-  // =============================================================
   void doGeneral(int r, int c) {
     switch (r * 4 + c) {
       case  0: winRun("chrome"); break;                          // Chrome öffnen
@@ -253,9 +239,7 @@
     }
   }
 
-  // =============================================================
   // TASTENAKTION - EASYEDA MODE
-  // =============================================================
   void doEasyEDA(int r, int c) {
     switch (r * 4 + c) {
       case  0: key1('w'); break;                                 // Wire
@@ -277,9 +261,7 @@
     }
   }
 
-  // =============================================================
   // TASTENAKTION - CHILL MODE
-  // =============================================================
   void doChill(int r, int c) {
     switch (r * 4 + c) {
       case  0: sendConsumerStep(CONSUMER_CONTROL_PLAY_PAUSE); break;
@@ -301,9 +283,7 @@
     }
   }
 
-  // =============================================================
   // TASTENAKTION - GAMING MODE
-  // =============================================================
   void doGaming(int r, int c) {
     switch (r * 4 + c) {
       case  0: key1('1'); break;
@@ -335,21 +315,20 @@
     }
   }
 
-  // =============================================================
   // DISPLAY (Landscape 160x128)
-  // =============================================================
-
+  // Layout: Header(0-17) | Line(17) | Last(18-28) | Line(29) | VOL(30-43) | BRI(44-57) | Line(58) | Grid(59-126)
   void drawPotiBar(int y, const char* label, uint16_t color, int pct) {
     tft.fillRect(0, y, 160, 14, ST77XX_BLACK);
     tft.setTextSize(1);
     tft.setTextColor(color);
-    tft.setCursor(2, y + 3);
+    tft.setCursor(2, y + 4);
     tft.print(label);
-    tft.drawRect(22, y + 2, 108, 10, COL_MIDGRAY);
-    int fillW = map(pct, 0, 100, 0, 106);
-    if (fillW > 0) tft.fillRect(23, y + 3, fillW, 8, color);
+    tft.fillRect(22, y + 3, 112, 8, 0x2104);
+    tft.drawRect(22, y + 3, 112, 8, COL_DARKGRAY);
+    int fillW = map(pct, 0, 100, 0, 110);
+    if (fillW > 0) tft.fillRect(23, y + 4, fillW, 6, color);
     tft.setTextColor(ST77XX_WHITE);
-    tft.setCursor(133, y + 3);
+    tft.setCursor(137, y + 4);
     if (pct < 100) tft.print(" ");
     if (pct < 10)  tft.print(" ");
     tft.print(pct);
@@ -357,64 +336,63 @@
   }
 
   void drawKeyGrid() {
-    const int startY = 74;
+    const int startY = 59;
     const int cellW  = 40;
-    const int cellH  = 13;
+    const int cellH  = 17;
     for (int r = 0; r < 4; r++) {
       for (int c = 0; c < 4; c++) {
         int x = c * cellW;
         int y = startY + r * cellH;
-        tft.drawRect(x, y, cellW - 1, cellH - 1, COL_DARKGRAY);
+        tft.fillRect(x, y, cellW, cellH, 0x1082);
+        tft.drawRect(x, y, cellW, cellH, COL_DARKGRAY);
+        const char* lbl = KEY_LABELS[currentMode][r][c];
+        int len = strlen(lbl);
+        while (len > 0 && lbl[len - 1] == ' ') len--;
+        int textX = x + (cellW - len * 6) / 2;
+        int textY = y + (cellH - 7) / 2;
         tft.setTextColor(ST77XX_WHITE);
         tft.setTextSize(1);
-        tft.setCursor(x + 2, y + 2);
-        tft.print(KEY_LABELS[currentMode][r][c]);
+        tft.setCursor(textX, textY);
+        for (int i = 0; i < len; i++) tft.write(lbl[i]);
       }
     }
   }
 
   void updateLastAction() {
-    tft.fillRect(0, 20, 160, 12, ST77XX_BLACK);
+    tft.fillRect(0, 18, 160, 11, ST77XX_BLACK);
     tft.setTextSize(1);
     tft.setTextColor(COL_MIDGRAY);
-    tft.setCursor(2, 22);
-    tft.print("LAST: ");
+    tft.setCursor(2, 21);
+    tft.print("LAST:");
     tft.setTextColor(ST77XX_YELLOW);
-    tft.print(lastAction.substring(0, 16));
+    tft.setCursor(38, 21);
+    tft.print(lastAction.substring(0, 18));
   }
 
   void drawBaseUI() {
     tft.fillScreen(ST77XX_BLACK);
 
-    // Modus-Header
-    tft.fillRect(0, 0, 160, 18, COL_NAVY);
+    // Header: Modus-Name zentriert
+    tft.fillRect(0, 0, 160, 17, COL_NAVY);
+    int nameLen = strlen(MODE_NAMES[currentMode]);
     tft.setTextColor(MODE_COLORS[currentMode]);
     tft.setTextSize(2);
-    tft.setCursor(4, 2);
+    tft.setCursor((160 - nameLen * 12) / 2, 1);
     tft.print(MODE_NAMES[currentMode]);
-    tft.drawFastHLine(0, 19, 160, ST77XX_WHITE);
+    tft.drawFastHLine(0, 17, 160, MODE_COLORS[currentMode]);
 
-    // Letzte Aktion
     updateLastAction();
-    tft.drawFastHLine(0, 33, 160, COL_DARKGRAY);
+    tft.drawFastHLine(0, 29, 160, COL_DARKGRAY);
 
-    // Lautstärke & Helligkeit Balken
-    drawPotiBar(35, "VOL", ST77XX_CYAN,   potiToPercent(PIN_VOL_POTI));
-    drawPotiBar(51, "BRI", ST77XX_YELLOW, potiToPercent(PIN_BRI_POTI));
-    tft.drawFastHLine(0, 67, 160, COL_DARKGRAY);
+    drawPotiBar(30, "VOL", ST77XX_MAGENTA, potiToPercent(PIN_VOL_POTI));
+    drawPotiBar(44, "BRI", 0x07FF,         potiToPercent(PIN_BRI_POTI));
+    tft.drawFastHLine(0, 58, 160, COL_DARKGRAY);
 
-    // Key-Grid
-    tft.setTextSize(1);
-    tft.setTextColor(COL_MIDGRAY);
-    tft.setCursor(2, 69);
-    tft.print("KEYS:");
     drawKeyGrid();
   }
 
-  // =============================================================
   // POTI HANDLER
   // Liest beide Potis, sendet HID-Schritte, updated Display
-  // =============================================================
   void handlePotis() {
     static unsigned long lastPoll    = 0;
     static int           lastVolDisp = -1;
@@ -453,13 +431,11 @@
     // Display aus tatsaechlich gesendeten Schritten berechnen (zeigt PC-Zustand)
     int volDisp = map(sentVol, 0, VOL_MAX_STEPS, 0, 100);
     int briDisp = map(sentBri, 0, BRI_MAX_STEPS, 0, 100);
-    if (volDisp != lastVolDisp) { drawPotiBar(35, "VOL", ST77XX_CYAN,   volDisp); lastVolDisp = volDisp; }
-    if (briDisp != lastBriDisp) { drawPotiBar(51, "BRI", ST77XX_YELLOW, briDisp); lastBriDisp = briDisp; }
+    if (volDisp != lastVolDisp) { drawPotiBar(30, "VOL", ST77XX_MAGENTA, volDisp); lastVolDisp = volDisp; }
+    if (briDisp != lastBriDisp) { drawPotiBar(44, "BRI", 0x07FF,         briDisp); lastBriDisp = briDisp; }
   }
 
-  // =============================================================
   // JOYSTICK
-  // =============================================================
 
   // Mittenposition einmessen (Joystick in Ruheposition beim Start lassen)
   void calibrateJoystick() {
@@ -512,9 +488,7 @@
     joyBtnLast = btnNow;
   }
 
-  // =============================================================
   // MODE BUTTON HANDLER
-  // =============================================================
   void handleModeButton() {
     static bool          lastPressed = false;
     static unsigned long lastTime    = 0;
@@ -531,9 +505,6 @@
     lastPressed = pressed;
   }
 
-  // =============================================================
-  // SETUP
-  // =============================================================
   void setup() {
     // 1. USB zuerst — dann delay damit Windows HID erkennt
     USB.begin();
@@ -581,9 +552,7 @@
     drawBaseUI();
   }
 
-  // =============================================================
   // LOOP
-  // =============================================================
   void loop() {
     unsigned long now = millis();
 
