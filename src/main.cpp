@@ -105,7 +105,7 @@
   // Hier kannst du die Labels anpassen
   const char* KEY_LABELS[4][4][4] = { 
     // ---- GENERAL ----
-    {{"CHROM", "EXPLR", "SCRSH", "LOCK "},
+    {{"FFOX", "EXPLR", "SCRSH", "LOCK "},
     {"UNDO",  "REDO",  "COPY",  "PASTE"},
     {"SAVE",  "SEL A", "FIND",  "CL TB"},
     {"NW TB", "RP TB", "AF4",   "DESK "}},
@@ -215,12 +215,22 @@
     delay(150);
     Keyboard.write(KEY_RETURN);
   }
+  // Alt+F2 (KRunner) → Befehl tippen → Enter  [KDE Plasma]
+  void linuxRun(const char* cmd) {
+    Keyboard.releaseAll();
+    Keyboard.press(KEY_LEFT_ALT); Keyboard.press(KEY_F2);
+    delay(100); Keyboard.releaseAll();
+    delay(500);                    // KRunner braucht kurz zum Öffnen
+    Keyboard.print(cmd);
+    delay(300);
+    Keyboard.write(KEY_RETURN);
+  }
 
   // TASTENAKTION - GENERAL MODE
   // Hier kannst du die Aktionen für General-Modus ändern
   void doGeneral(int r, int c) {
     switch (r * 4 + c) {
-      case  0: winRun("chrome"); break;                          // Chrome öffnen
+      case  0: linuxRun("firefox"); break;                       // Firefox öffnen
       case  1: key2(KEY_LEFT_GUI, 'e'); break;                   // Explorer
       case  2: key3(KEY_LEFT_GUI, KEY_LEFT_SHIFT, 's'); break;   // Screenshot
       case  3: key2(KEY_LEFT_GUI, 'l'); break;                   // PC sperren
