@@ -339,16 +339,24 @@ int8_t axisToSpeed(int raw, int center) {
   return (int8_t)(d > 0 ? spd : -spd);
 }
 
+// press()/release() senden bei Modifiern keinen Report, der PC sähe sie sonst
+// ewig gedrückt. Usage 0x01 ist nie im Report, das Loslassen sendet also nur.
+void sendKeyReport() {
+  Keyboard.releaseRaw(0x01);
+}
+
 // Modifier zählen, damit zwei gehaltene Tasten sich nicht gegenseitig lösen
 void modsDown(uint8_t mods) {
   for (int b = 0; b < 8; b++) {
     if ((mods & (1 << b)) && modCount[b]++ == 0) Keyboard.press(0x80 + b);
   }
+  sendKeyReport();
 }
 void modsUp(uint8_t mods) {
   for (int b = 0; b < 8; b++) {
     if ((mods & (1 << b)) && modCount[b] > 0 && --modCount[b] == 0) Keyboard.release(0x80 + b);
   }
+  sendKeyReport();
 }
 
 void tapKey(uint8_t mods, uint8_t code) {

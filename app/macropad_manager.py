@@ -225,17 +225,21 @@ class PadLink:
         self.path = path
         self.fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         self.buf = b""
-        attrs = termios.tcgetattr(self.fd)
-        attrs[0] = 0
-        attrs[1] = 0
-        attrs[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
-        attrs[3] = 0
-        attrs[4] = attrs[5] = termios.B115200
-        termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
-        termios.tcflush(self.fd, termios.TCIOFLUSH)
-        reply = self.command("HELLO", lambda line: line.startswith("MACROPAD"))
-        if reply[-1].split()[-1] != "1":
-            raise PadError("This firmware speaks a different protocol version.")
+        try:
+            attrs = termios.tcgetattr(self.fd)
+            attrs[0] = 0
+            attrs[1] = 0
+            attrs[2] = termios.CS8 | termios.CREAD | termios.CLOCAL
+            attrs[3] = 0
+            attrs[4] = attrs[5] = termios.B115200
+            termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
+            termios.tcflush(self.fd, termios.TCIOFLUSH)
+            reply = self.command("HELLO", lambda line: line.startswith("MACROPAD"))
+            if reply[-1].split()[-1] != "1":
+                raise PadError("This firmware speaks a different protocol version.")
+        except (OSError, termios.error, PadError):
+            self.close()
+            raise
 
     def close(self):
         if self.fd is not None:
@@ -627,7 +631,7 @@ class MainWindow(QMainWindow):
             self.set_online(False, f"No permission for {port}. Your user must be "
                                    "in the uucp group.")
             return
-        except (OSError, PadError) as err:
+        except (OSError, termios.error, PadError) as err:
             self.disconnected(str(err))
             return
         self.set_online(True, f"Connected on {port}")
