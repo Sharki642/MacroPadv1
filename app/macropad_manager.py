@@ -13,13 +13,18 @@ import sys
 import termios
 import time
 
-from PySide6.QtCore import QRegularExpression, QSettings, QSize, Qt, QTimer
-from PySide6.QtGui import QIcon, QImage, QPixmap, QRegularExpressionValidator
+from PySide6.QtCore import (
+    QRectF, QRegularExpression, QSettings, QSize, Qt, QTimer,
+)
+from PySide6.QtGui import (
+    QColor, QFont, QFontMetrics, QIcon, QImage, QPainter, QPalette, QPixmap,
+    QRegularExpressionValidator,
+)
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QFileDialog, QFormLayout, QGridLayout,
-    QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow, QMessageBox,
-    QPushButton, QStackedWidget, QTabBar, QToolButton, QVBoxLayout,
-    QWidget,
+    QAbstractButton, QApplication, QCheckBox, QComboBox, QFileDialog,
+    QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
+    QMainWindow, QMessageBox, QPushButton, QSizePolicy, QStackedWidget,
+    QTabBar, QVBoxLayout, QWidget,
 )
 
 NUM_TABS = 4
@@ -27,6 +32,68 @@ NUM_KEYS = 16
 LABEL_LEN = 5
 MAX_TEXT = 48
 USB_VENDOR = "239a"
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+APP_ICON = os.path.join(APP_DIR, "macropad.png")
+ARROW_ICON = os.path.join(APP_DIR, "arrow.png")
+
+GREEN = "#22c55e"
+LIGHT_GREEN = "#86efac"
+RED = "#f26d6d"          # only for errors and "not connected"
+BG = "#0f1512"
+PANEL = "#161e1a"
+RAISED = "#202a25"
+LINE = "#2f3d35"
+TEXT = "#e8f2ec"
+MUTED = "#8aa094"
+
+STYLE = f"""
+QWidget {{ color: {TEXT}; }}
+QMainWindow, QMessageBox, QFileDialog {{ background: {BG}; }}
+QLabel {{ background: transparent; }}
+QLabel#hint {{ color: {MUTED}; }}
+QLabel#error {{ color: {RED}; }}
+QGroupBox {{
+    background: {PANEL}; border: 1px solid {LINE}; border-radius: 10px;
+    margin-top: 12px; padding: 14px 10px 10px 10px; font-weight: bold;
+}}
+QGroupBox::title {{
+    subcontrol-origin: margin; left: 12px; padding: 0 6px; color: {GREEN};
+}}
+QLineEdit, QComboBox {{
+    background: {RAISED}; border: 1px solid {LINE}; border-radius: 6px;
+    padding: 5px 8px; font-weight: normal;
+    selection-background-color: {GREEN}; selection-color: {BG};
+}}
+QLineEdit:focus, QComboBox:focus {{ border-color: {GREEN}; }}
+QComboBox QAbstractItemView {{
+    background: {RAISED}; border: 1px solid {LINE};
+    selection-background-color: {GREEN}; selection-color: {BG};
+}}
+QComboBox::drop-down {{ border: none; width: 24px; }}
+QComboBox::down-arrow {{ image: url("{ARROW_ICON}"); width: 10px; height: 6px; }}
+QCheckBox {{ font-weight: normal; }}
+QCheckBox::indicator {{
+    width: 14px; height: 14px; border-radius: 4px;
+    border: 1px solid {MUTED}; background: {RAISED};
+}}
+QCheckBox::indicator:hover {{ border-color: {GREEN}; }}
+QCheckBox::indicator:checked {{ background: {GREEN}; border-color: {GREEN}; }}
+QPushButton {{
+    background: {RAISED}; border: 1px solid {LINE}; border-radius: 6px;
+    padding: 6px 14px; font-weight: normal;
+}}
+QPushButton:hover {{ border-color: {GREEN}; }}
+QPushButton:checked {{ background: {LIGHT_GREEN}; border-color: {LIGHT_GREEN}; color: {BG}; }}
+QPushButton#danger {{ color: {RED}; }}
+QPushButton#danger:hover {{ border-color: {RED}; }}
+QTabBar::tab {{
+    background: transparent; color: {MUTED}; padding: 8px 22px;
+    font-weight: bold; border-bottom: 3px solid {LINE};
+}}
+QTabBar::tab:hover {{ color: {TEXT}; }}
+QTabBar::tab:selected {{ color: {GREEN}; border-bottom-color: {GREEN}; }}
+QWidget:disabled {{ color: {MUTED}; }}
+"""
 
 ACT_NONE, ACT_KEY, ACT_TEXT, ACT_RUN, ACT_MEDIA, ACT_MOUSE = range(6)
 ACTION_NAMES = ["Nothing", "Keyboard shortcut", "Type text", "Run program",
@@ -56,7 +123,7 @@ ICONS = [bytes.fromhex(h) for h in """
 000000000ff010083ffc210425a425a421043ffc20043ffc0000000000000000
 0000000007e00810081008101ff81bb81bb81bb81bb81bb81ff8000000000000
 000000000180030007000fff0f80070003000180000000000000000000000000
-0000000018000c000e00fff001f000e000c00180000000000000000000000000
+00000000018000c000e0fff001f000e000c00180000000000000000000000000
 000000001fe010201fe01020ffe080208020802080208020ffe0000000000000
 0000000007e01c383ffc2004200420043ffc2004200420043ffc000000000000
 00000000ffff80018ff1810180018001800180018ff18101ffff000000000000
@@ -326,7 +393,7 @@ def find_port():
     return None
 
 
-def icon_pixmap(index, color=0x35C4F0, scale=2):
+def icon_pixmap(index, color=0x22C55E, scale=2):
     image = QImage(16, 16, QImage.Format_ARGB32)
     image.fill(0)
     data = ICONS[index]
@@ -336,6 +403,86 @@ def icon_pixmap(index, color=0x35C4F0, scale=2):
             if row & (0x8000 >> x):
                 image.setPixel(x, y, 0xFF000000 | color)
     return QPixmap.fromImage(image).scaled(16 * scale, 16 * scale)
+
+
+class KeyButton(QAbstractButton):
+    """One key of the pad. Icon and text grow with the window."""
+
+    def __init__(self):
+        super().__init__()
+        self.label = ""
+        self.summary = ""
+        self.icon_index = -1
+        self.unused = False
+        self.setCheckable(True)
+        self.setAutoExclusive(True)
+        self.setMinimumSize(QSize(104, 80))
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        self.setAttribute(Qt.WA_Hover)
+
+    def set_content(self, label, summary, icon_index, unused):
+        self.label = label
+        self.summary = summary
+        self.icon_index = icon_index
+        self.unused = unused
+        self.update()
+
+    def event(self, event):
+        if event.type() in (event.Type.HoverEnter, event.Type.HoverLeave):
+            self.update()
+        return super().event(event)
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        box = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
+        active = self.isChecked() and self.isEnabled()
+        hover = self.underMouse() and self.isEnabled()
+
+        fill = QColor(RAISED if hover or active else PANEL)
+        border = QColor(GREEN if active else (MUTED if hover else LINE))
+        painter.setBrush(fill)
+        painter.setPen(border)
+        pen = painter.pen()
+        pen.setWidthF(2.5 if active else 1.0)
+        painter.setPen(pen)
+        painter.drawRoundedRect(box, 10, 10)
+
+        height = self.height()
+        label_px = max(13, min(34, int(height * 0.17)))
+        small_px = max(10, min(18, int(height * 0.105)))
+        label_font = QFont(self.font())
+        label_font.setPixelSize(label_px)
+        label_font.setBold(True)
+        small_font = QFont(self.font())
+        small_font.setPixelSize(small_px)
+
+        scale = 0
+        if self.icon_index >= 0:
+            scale = max(2, int(height * 0.42 / 16))
+        icon_h = 16 * scale
+        gap = int(height * 0.05)
+        label_h = QFontMetrics(label_font).height()
+        small_h = QFontMetrics(small_font).height()
+        total = icon_h + (gap if icon_h else 0) + label_h + small_h + 2
+        y = (height - total) // 2
+
+        if icon_h:
+            pixmap = icon_pixmap(self.icon_index, scale=scale)
+            painter.setOpacity(1.0 if self.isEnabled() else 0.4)
+            painter.drawPixmap((self.width() - pixmap.width()) // 2, y, pixmap)
+            painter.setOpacity(1.0)
+            y += icon_h + gap
+
+        width = self.width() - 12
+        painter.setFont(label_font)
+        painter.setPen(QColor(TEXT if self.isEnabled() and not self.unused else MUTED))
+        painter.drawText(QRectF(6, y, width, label_h), Qt.AlignCenter, self.label)
+        y += label_h + 2
+        painter.setFont(small_font)
+        painter.setPen(QColor(LIGHT_GREEN if active else MUTED))
+        elided = QFontMetrics(small_font).elidedText(self.summary, Qt.ElideRight, width)
+        painter.drawText(QRectF(6, y, width, small_h), Qt.AlignCenter, elided)
 
 
 class RecordButton(QPushButton):
@@ -406,6 +553,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("MacroPad", "Manager")
 
         self.setWindowTitle("MacroPad Manager")
+        self.resize(1040, 640)
         self._build_ui()
 
         self.save_timer = QTimer(self, singleShot=True, interval=500)
@@ -435,13 +583,23 @@ class MainWindow(QMainWindow):
         outer = QVBoxLayout(root)
 
         top = QHBoxLayout()
+        logo = QLabel()
+        logo.setPixmap(QPixmap(APP_ICON).scaled(
+            40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        title = QLabel(f'<span style="font-size:20px; font-weight:800;">'
+                       f'<span style="color:{GREEN};">MACRO</span>'
+                       f'<span style="color:{LIGHT_GREEN};">PAD</span></span>')
         self.status = QLabel()
+        self.status.setWordWrap(True)
         self.layout_box = QComboBox()
         self.layout_box.addItems(LAYOUTS)
         saved = self.settings.value("layout", "")
         if saved in LAYOUTS:
             self.layout_box.setCurrentText(saved)
         self.layout_box.currentTextChanged.connect(self.layout_changed)
+        top.addWidget(logo)
+        top.addWidget(title)
+        top.addSpacing(16)
         top.addWidget(self.status, 1)
         top.addWidget(QLabel("PC keyboard layout:"))
         top.addWidget(self.layout_box)
@@ -470,23 +628,23 @@ class MainWindow(QMainWindow):
         grid.setSpacing(6)
         self.buttons = []
         for i in range(NUM_KEYS):
-            button = QToolButton()
-            button.setCheckable(True)
-            button.setAutoExclusive(True)
-            button.setFixedSize(QSize(118, 92))
-            button.setIconSize(QSize(32, 32))
-            button.setToolButtonStyle(Qt.ToolButtonTextUnderIcon)
+            button = KeyButton()
             button.clicked.connect(lambda _=False, k=i: self.select_key(k))
             grid.addWidget(button, i // 4, i % 4)
             self.buttons.append(button)
-        body.addLayout(grid)
-        body.addWidget(self._build_editor(), 1)
-        outer.addLayout(body)
+        for i in range(4):
+            grid.setRowStretch(i, 1)
+            grid.setColumnStretch(i, 1)
+        body.addLayout(grid, 1)
+        body.addSpacing(6)
+        body.addWidget(self._build_editor())
+        outer.addLayout(body, 1)
 
         bottom = QHBoxLayout()
         export_button = QPushButton("Export...")
         import_button = QPushButton("Import...")
         reset_button = QPushButton("Reset to defaults...")
+        reset_button.setObjectName("danger")
         export_button.clicked.connect(self.export_config)
         import_button.clicked.connect(self.import_config)
         reset_button.clicked.connect(self.reset_config)
@@ -500,6 +658,7 @@ class MainWindow(QMainWindow):
 
     def _build_editor(self):
         box = QGroupBox("Key")
+        box.setFixedWidth(370)
         self.editor = box
         form = QFormLayout(box)
 
@@ -541,7 +700,7 @@ class MainWindow(QMainWindow):
         form.addRow(self.pages)
 
         self.error = QLabel()
-        self.error.setStyleSheet("color: #e05252;")
+        self.error.setObjectName("error")
         self.error.setWordWrap(True)
         form.addRow(self.error)
         return box
@@ -596,6 +755,7 @@ class MainWindow(QMainWindow):
         edit = QLineEdit()
         edit.textEdited.connect(self.changed)
         note = QLabel(hint)
+        note.setObjectName("hint")
         note.setWordWrap(True)
         col.addWidget(edit)
         col.addWidget(note)
@@ -646,8 +806,8 @@ class MainWindow(QMainWindow):
         self.set_online(False, message)
 
     def set_online(self, online, message):
-        self.status.setText(("● " if online else "○ ") + message)
-        self.status.setWordWrap(True)
+        self.status.setText(f'<span style="color:{GREEN if online else RED};">●</span> '
+                            + message)
         self.editor.setEnabled(online)
         self.tab_bar.setEnabled(online)
         self.tab_name.setEnabled(online)
@@ -668,14 +828,8 @@ class MainWindow(QMainWindow):
         cfg = self.keys[self.tab][i]
         button = self.buttons[i]
         summary = describe(cfg, self.lang, self.table)
-        if len(summary) > 16:
-            summary = summary[:15] + "…"
-        button.setText(f"{cfg['label']}\n{summary}")
-        button.setToolTip(describe(cfg, self.lang, self.table))
-        if cfg["icon"] >= 0:
-            button.setIcon(QIcon(icon_pixmap(cfg["icon"])))
-        else:
-            button.setIcon(QIcon())
+        button.set_content(cfg["label"], summary, cfg["icon"], cfg["type"] == ACT_NONE)
+        button.setToolTip(summary)
 
     def load_editor(self):
         self.loading = True
@@ -857,11 +1011,28 @@ class MainWindow(QMainWindow):
         super().closeEvent(event)
 
 
+def apply_theme(app):
+    app.setStyle("Fusion")
+    app.setDesktopFileName("macropad-manager")
+    app.setWindowIcon(QIcon(APP_ICON))
+    palette = app.palette()
+    for role, color in ((QPalette.Window, BG), (QPalette.Base, RAISED),
+                        (QPalette.AlternateBase, PANEL), (QPalette.Button, RAISED),
+                        (QPalette.Text, TEXT), (QPalette.WindowText, TEXT),
+                        (QPalette.ButtonText, TEXT), (QPalette.ToolTipBase, PANEL),
+                        (QPalette.ToolTipText, TEXT), (QPalette.Highlight, GREEN),
+                        (QPalette.HighlightedText, BG)):
+        palette.setColor(role, QColor(color))
+    app.setPalette(palette)
+    app.setStyleSheet(STYLE)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--port", help="serial port (default: find the pad)")
     args, rest = parser.parse_known_args()
     app = QApplication([sys.argv[0]] + rest)
+    apply_theme(app)
     window = MainWindow(args.port)
     window.show()
     sys.exit(app.exec())
