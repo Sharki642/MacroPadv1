@@ -96,10 +96,10 @@ const int COL_PINS[4] = {15, 7, 6, 5};
 
 
 // MODI (3-Buchstaben-Abkürzungen, per App änderbar)
-enum Mode { GENERAL = 0, EASYEDA = 1, CHILL = 2, GAMING = 3 };
+enum Mode { GENERAL = 0, EASYEDA = 1, HOW = 2, GAMING = 3 };
 #define NUM_TABS 4
 #define NUM_KEYS 16
-char           tabNames[NUM_TABS][4] = {"GEN", "EDA", "CHL", "GAM"};
+char           tabNames[NUM_TABS][4] = {"GEN", "EDA", "HOW", "GAM"};
 const uint16_t MODE_COLORS[] = {ST77XX_CYAN, ST77XX_GREEN, ST77XX_MAGENTA, COL_ORANGE};
 
 
@@ -236,7 +236,7 @@ const DefaultKey DEFAULT_KEYS[NUM_TABS][NUM_KEYS] = {
    {ACT_KEY, M_CTRL | M_SHIFT,    HID_LETTER('p'),   0, -1, "PWR",   nullptr},
    {ACT_KEY, 0,                   HID_LETTER('n'),   0, -1, "NET",   nullptr},
    {ACT_KEY, 0,                   HID_LETTER('b'),   0, -1, "BUS",   nullptr}},
-  // ---- CHILL ----
+  // ---- HOW ----
   {{ACT_MEDIA, 0, CONSUMER_CONTROL_PLAY_PAUSE,       0, -1, "PLAY",  nullptr},
    {ACT_MEDIA, 0, CONSUMER_CONTROL_SCAN_NEXT,        0, -1, "NEXT",  nullptr},
    {ACT_MEDIA, 0, CONSUMER_CONTROL_SCAN_PREVIOUS,    0, -1, "PREV",  nullptr},
@@ -574,12 +574,20 @@ bool saveKey(int t, int k) {
 }
 
 // KONFIGURATIONS-PROTOKOLL (Zeilen über USB-Serial)
-//   HELLO                                        -> MACROPAD 1
+//   HELLO                                        -> MACROPAD 2
 //   GET                                          -> TAB ... / KEY ... / END
+//   STATE                                        -> STATE tab
+//   GAME 1|0                                     -> OK | ERR (nur im HOW-Modus)
 //   SET tab key type mods code icon hold lbl txt -> OK | ERR
 //   NAME tab name                                -> OK | ERR
 //   RESET                                        -> OK
 // lbl und txt sind Hex-Strings, "-" steht für leer.
+// Von selbst sendet das Pad: EVT TAB tab, EVT KEY key (nur im Spiel)
+#define GAME_TIMEOUT_MS 3000
+
+bool          gameActive = false;
+unsigned long gamePing   = 0;
+
 void printHex(const uint8_t* data, int len) {
   if (len == 0) { ConfigPort.print("-"); return; }
   for (int i = 0; i < len; i++) {
@@ -600,6 +608,32 @@ int parseHex(const char* s, uint8_t* out, int maxLen) {
     if (*end != 0) return -1;
   }
   return len / 2;
+}
+
+void reportTab() {
+  ConfigPort.printf("EVT TAB %d\n", currentMode);
+}
+
+// Im Spiel gehen die Tasten nur an die App. Meldet sich die App nicht mehr,
+// fällt das Pad von selbst in den normalen Betrieb zurück.
+bool gameTakesKey(int index) {
+  if (gameActive && millis() - gamePing > GAME_TIMEOUT_MS) gameActive = false;
+  if (!gameActive) return false;
+  ConfigPort.printf("EVT KEY %d\n", index);
+  return true;
+}
+
+bool cmdGame() {
+  const char* on = strtok(nullptr, " ");
+  if (!on) return false;
+  if (atoi(on) == 0) {
+    gameActive = false;
+    return true;
+  }
+  if (currentMode != HOW) return false;
+  gameActive = true;
+  gamePing   = millis();
+  return true;
 }
 
 void cmdGet() {
@@ -659,7 +693,7 @@ bool cmdName() {
 
 void cmdReset() {
   prefs.clear();
-  const char* names[NUM_TABS] = {"GEN", "EDA", "CHL", "GAM"};
+  const char* names[NUM_TABS] = {"GEN", "EDA", "HOW", "GAM"};
   for (int t = 0; t < NUM_TABS; t++) {
     strcpy(tabNames[t], names[t]);
     for (int k = 0; k < NUM_KEYS; k++) loadDefaultKey(t, k);
@@ -670,7 +704,9 @@ void cmdReset() {
 void handleCommand(char* line) {
   const char* cmd = strtok(line, " ");
   if (!cmd) return;
-  if (strcmp(cmd, "HELLO") == 0)      ConfigPort.print("MACROPAD 1\n");
+  if (strcmp(cmd, "HELLO") == 0)      ConfigPort.print("MACROPAD 2\n");
+  else if (strcmp(cmd, "STATE") == 0) ConfigPort.printf("STATE %d\n", currentMode);
+  else if (strcmp(cmd, "GAME") == 0)  ConfigPort.print(cmdGame() ? "OK\n" : "ERR\n");
   else if (strcmp(cmd, "GET") == 0)   cmdGet();
   else if (strcmp(cmd, "SET") == 0)   ConfigPort.print(cmdSet()  ? "OK\n" : "ERR\n");
   else if (strcmp(cmd, "NAME") == 0)  ConfigPort.print(cmdName() ? "OK\n" : "ERR\n");
@@ -755,7 +791,9 @@ void handleModeButton() {
     if (pressed) {
       currentMode = (currentMode + 1) % 4;
       lastAction  = String("-> ") + tabNames[currentMode];
+      gameActive  = false;
       drawBaseUI();
+      reportTab();
     }
   }
 }
@@ -822,8 +860,8 @@ void loop() {
       if (pressed != keyState[r][c] && (now - keyDebounce[r][c] > DEBOUNCE_MS)) {
         keyDebounce[r][c] = now;
         keyState[r][c]    = pressed;
-        if (pressed) pressAction(r, c);
-        else         releaseAction(r, c);
+        if (!pressed)                       releaseAction(r, c);
+        else if (!gameTakesKey(r * 4 + c))  pressAction(r, c);
       }
     }
 

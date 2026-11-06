@@ -8,6 +8,7 @@ import argparse
 import glob
 import json
 import os
+import random
 import select
 import sys
 import termios
@@ -23,8 +24,8 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QAbstractButton, QApplication, QCheckBox, QComboBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
-    QMainWindow, QMessageBox, QPushButton, QSizePolicy, QStackedWidget,
-    QTabBar, QVBoxLayout, QWidget,
+    QMainWindow, QMessageBox, QProgressBar, QPushButton, QSizePolicy,
+    QStackedWidget, QTabBar, QVBoxLayout, QWidget,
 )
 
 NUM_TABS = 4
@@ -32,6 +33,13 @@ NUM_KEYS = 16
 LABEL_LEN = 5
 MAX_TEXT = 48
 USB_VENDOR = "239a"
+PROTOCOL = "2"
+HOW_TAB = 2
+ROUND_SECONDS = 30
+HIT_POINTS = 10
+WRONG_POINTS = 5
+SLOWEST_DOT_MS = 1100
+FASTEST_DOT_MS = 450
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 APP_ICON = os.path.join(APP_DIR, "macropad.png")
 ARROW_ICON = os.path.join(APP_DIR, "arrow.png")
@@ -39,6 +47,7 @@ ARROW_ICON = os.path.join(APP_DIR, "arrow.png")
 GREEN = "#22c55e"
 LIGHT_GREEN = "#86efac"
 RED = "#f26d6d"          # only for errors and "not connected"
+DOT_RED = "#ff2b2b"
 BG = "#0f1512"
 PANEL = "#161e1a"
 RAISED = "#202a25"
@@ -92,6 +101,10 @@ QTabBar::tab {{
 }}
 QTabBar::tab:hover {{ color: {TEXT}; }}
 QTabBar::tab:selected {{ color: {GREEN}; border-bottom-color: {GREEN}; }}
+QProgressBar {{ background: {RAISED}; border: none; border-radius: 4px; max-height: 8px; }}
+QProgressBar::chunk {{ background: {GREEN}; border-radius: 4px; }}
+QLabel#bigScore {{ color: {GREEN}; font-size: 64px; font-weight: 800; }}
+QLabel#stat {{ font-size: 16px; }}
 QWidget:disabled {{ color: {MUTED}; }}
 """
 
@@ -292,6 +305,7 @@ class PadLink:
         self.path = path
         self.fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         self.buf = b""
+        self.events = []
         try:
             attrs = termios.tcgetattr(self.fd)
             attrs[0] = 0
@@ -302,8 +316,8 @@ class PadLink:
             termios.tcsetattr(self.fd, termios.TCSANOW, attrs)
             termios.tcflush(self.fd, termios.TCIOFLUSH)
             reply = self.command("HELLO", lambda line: line.startswith("MACROPAD"))
-            if reply[-1].split()[-1] != "1":
-                raise PadError("This firmware speaks a different protocol version.")
+            if reply[-1].split()[-1] != PROTOCOL:
+                raise PadError("Old firmware on the pad: please flash it once.")
         except (OSError, termios.error, PadError):
             self.close()
             raise
@@ -337,7 +351,9 @@ class PadLink:
             lines = []
             while True:
                 reply = self._read_line(deadline)
-                if reply:
+                if reply.startswith("EVT "):
+                    self.events.append(reply)
+                elif reply:
                     lines.append(reply)
                     if is_last(reply):
                         return lines
@@ -348,6 +364,30 @@ class PadLink:
         reply = self.command(line, lambda r: r in ("OK", "ERR"))
         if reply[-1] != "OK":
             raise PadError("The pad rejected the change (flash full?).")
+
+    def poll_events(self):
+        """Returns everything the pad sent on its own since the last call."""
+        try:
+            while select.select([self.fd], [], [], 0)[0]:
+                data = os.read(self.fd, 4096)
+                if not data:
+                    raise PadError("The pad went away.")
+                self.buf += data
+        except OSError as err:
+            raise PadError(f"USB error: {err}") from err
+        while b"\n" in self.buf:
+            line, self.buf = self.buf.split(b"\n", 1)
+            line = line.decode("ascii", "replace").strip()
+            if line.startswith("EVT "):
+                self.events.append(line)
+        events, self.events = self.events, []
+        return events
+
+    def read_tab(self):
+        return int(self.command("STATE", lambda r: r.startswith("STATE"))[-1].split()[1])
+
+    def set_game(self, active):
+        return self.command(f"GAME {int(active)}", lambda r: r in ("OK", "ERR"))[-1] == "OK"
 
     def read_all(self):
         tabs = [""] * NUM_TABS
@@ -539,12 +579,244 @@ class RecordButton(QPushButton):
         self.on_record(mods, code)
 
 
+class GameCell(QWidget):
+    """One field of the game: dark, or showing the red dot."""
+
+    def __init__(self):
+        super().__init__()
+        self.dot = False
+        self.flash = None
+        self.setMinimumSize(QSize(90, 90))
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def show_dot(self, on):
+        self.dot = on
+        self.update()
+
+    def show_flash(self, color):
+        self.flash = color
+        self.update()
+        QTimer.singleShot(180, self.clear_flash)
+
+    def clear_flash(self):
+        self.flash = None
+        self.update()
+
+    def paintEvent(self, _event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        box = QRectF(self.rect()).adjusted(1.5, 1.5, -1.5, -1.5)
+        painter.setBrush(QColor(self.flash or PANEL))
+        painter.setPen(QColor(LINE))
+        painter.drawRoundedRect(box, 10, 10)
+        if self.dot:
+            size = min(box.width(), box.height()) * 0.55
+            painter.setBrush(QColor(DOT_RED))
+            painter.setPen(Qt.NoPen)
+            painter.drawEllipse(box.center(), size / 2, size / 2)
+
+
+class GamePage(QWidget):
+    """Press the key where the red dot shows up, before it disappears."""
+
+    def __init__(self, window):
+        super().__init__()
+        self.window_ = window
+        self.running = False
+        self.dot = None
+        self.last_key = None
+        self.score = self.hits = self.misses = 0
+        self.deadline = 0.0
+        self.last_ping = 0.0
+        self.best = int(window.settings.value("best", 0))
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        grid = QGridLayout()
+        grid.setSpacing(6)
+        self.cells = [GameCell() for _ in range(NUM_KEYS)]
+        for i, cell in enumerate(self.cells):
+            grid.addWidget(cell, i // 4, i % 4)
+        for i in range(4):
+            grid.setRowStretch(i, 1)
+            grid.setColumnStretch(i, 1)
+        row.addLayout(grid, 1)
+        row.addSpacing(6)
+
+        panel = QGroupBox("Game")
+        panel.setFixedWidth(370)
+        col = QVBoxLayout(panel)
+        self.score_label = QLabel("0")
+        self.score_label.setObjectName("bigScore")
+        self.score_label.setAlignment(Qt.AlignCenter)
+        self.stats = QLabel()
+        self.stats.setObjectName("stat")
+        self.stats.setAlignment(Qt.AlignCenter)
+        self.time_bar = QProgressBar()
+        self.time_bar.setRange(0, ROUND_SECONDS * 1000)
+        self.time_bar.setValue(ROUND_SECONDS * 1000)
+        self.time_bar.setTextVisible(False)
+        self.start_button = QPushButton("Start")
+        self.start_button.clicked.connect(self.start_or_stop)
+        self.message = QLabel()
+        self.message.setObjectName("hint")
+        self.message.setWordWrap(True)
+        self.message.setAlignment(Qt.AlignCenter)
+        col.addWidget(self.score_label)
+        col.addWidget(self.stats)
+        col.addSpacing(10)
+        col.addWidget(self.time_bar)
+        col.addSpacing(10)
+        col.addWidget(self.start_button)
+        col.addWidget(self.message)
+        col.addStretch(1)
+        row.addWidget(panel)
+
+        self.clock = QTimer(self, interval=50)
+        self.clock.timeout.connect(self.tick)
+        self.dot_timer = QTimer(self, singleShot=True)
+        self.dot_timer.timeout.connect(self.dot_missed)
+        self.gap_timer = QTimer(self, singleShot=True)
+        self.gap_timer.timeout.connect(self.next_dot)
+        self.update_stats()
+
+    def update_stats(self):
+        self.score_label.setText(str(self.score))
+        self.stats.setText(f"Hits {self.hits}   Misses {self.misses}   Best {self.best}")
+
+    def refresh_state(self):
+        """Only playable while the pad itself is on the HOW tab."""
+        window = self.window_
+        ready = window.link is not None and window.pad_tab == HOW_TAB
+        self.start_button.setEnabled(ready or self.running)
+        if self.running:
+            return
+        if window.link is None:
+            self.message.setText("Connect the macropad to play.")
+        elif not ready:
+            self.message.setText(f"Press the mode button until the pad shows "
+                                 f"{window.tabs[HOW_TAB]}.")
+        elif not self.message.text().startswith("Round over"):
+            self.message.setText("Press the key on the pad where the red dot shows up.")
+
+    def start_or_stop(self):
+        if self.running:
+            self.stop("Round stopped.")
+        else:
+            self.start()
+
+    def start(self):
+        window = self.window_
+        if window.link is None or window.pad_tab != HOW_TAB:
+            return
+        try:
+            if not window.link.set_game(True):
+                self.message.setText("The pad is not on the game tab.")
+                return
+        except PadError as err:
+            window.disconnected(str(err))
+            return
+        self.running = True
+        self.score = self.hits = self.misses = 0
+        self.deadline = time.monotonic() + ROUND_SECONDS
+        self.last_ping = time.monotonic()
+        self.start_button.setText("Stop")
+        self.message.setText("Go!")
+        self.update_stats()
+        self.clock.start()
+        self.next_dot()
+
+    def stop(self, message):
+        if not self.running:
+            self.refresh_state()
+            return
+        self.running = False
+        self.clock.stop()
+        self.dot_timer.stop()
+        self.gap_timer.stop()
+        self.set_dot(None)
+        self.time_bar.setValue(ROUND_SECONDS * 1000)
+        self.start_button.setText("Start")
+        self.message.setText(message)
+        link = self.window_.link
+        if link:
+            try:
+                link.set_game(False)
+            except PadError as err:
+                self.window_.disconnected(str(err))
+        self.refresh_state()
+
+    def set_dot(self, key):
+        if self.dot is not None:
+            self.cells[self.dot].show_dot(False)
+        self.dot = key
+        if key is not None:
+            self.cells[key].show_dot(True)
+
+    def next_dot(self):
+        key = random.choice([k for k in range(NUM_KEYS) if k != self.last_key])
+        self.last_key = key
+        self.set_dot(key)
+        played = 1.0 - (self.deadline - time.monotonic()) / ROUND_SECONDS
+        window = SLOWEST_DOT_MS - (SLOWEST_DOT_MS - FASTEST_DOT_MS) * min(played, 1.0)
+        self.dot_timer.start(int(window))
+
+    def wait_for_next(self):
+        self.dot_timer.stop()
+        self.set_dot(None)
+        self.gap_timer.start(random.randint(150, 400))
+
+    def dot_missed(self):
+        self.misses += 1
+        self.cells[self.dot].show_flash(RED)
+        self.update_stats()
+        self.wait_for_next()
+
+    def key_pressed(self, key):
+        if not self.running or not 0 <= key < NUM_KEYS:
+            return
+        if key == self.dot:
+            self.hits += 1
+            self.score += HIT_POINTS
+            self.cells[key].show_flash(GREEN)
+            self.wait_for_next()
+        else:
+            self.misses += 1
+            self.score = max(0, self.score - WRONG_POINTS)
+            self.cells[key].show_flash(RED)
+        self.update_stats()
+
+    def tick(self):
+        now = time.monotonic()
+        left = self.deadline - now
+        if left <= 0:
+            self.finish()
+            return
+        self.time_bar.setValue(int(left * 1000))
+        if now - self.last_ping >= 1.0:
+            self.last_ping = now
+            try:
+                if not self.window_.link.set_game(True):
+                    self.stop("Round stopped: the pad left the game tab.")
+            except PadError as err:
+                self.window_.disconnected(str(err))
+
+    def finish(self):
+        record = self.score > self.best
+        if record:
+            self.best = self.score
+            self.window_.settings.setValue("best", self.best)
+        self.update_stats()
+        self.stop(f"Round over: {self.score} points" + (" - new best!" if record else ""))
+
+
 class MainWindow(QMainWindow):
     def __init__(self, port_override):
         super().__init__()
         self.port_override = port_override
         self.link = None
-        self.tabs = ["GEN", "EDA", "CHL", "GAM"]
+        self.tabs = ["GEN", "EDA", "HOW", "GAM"]
+        self.pad_tab = None
         self.keys = None
         self.tab = 0
         self.key = 0
@@ -561,6 +833,9 @@ class MainWindow(QMainWindow):
         self.watch = QTimer(self, interval=1500)
         self.watch.timeout.connect(self.check_connection)
         self.watch.start()
+        self.poller = QTimer(self, interval=15)
+        self.poller.timeout.connect(self.poll_pad)
+        self.poller.start()
         self.check_connection()
 
     # ---- layout helpers ----
@@ -601,9 +876,27 @@ class MainWindow(QMainWindow):
         top.addWidget(title)
         top.addSpacing(16)
         top.addWidget(self.status, 1)
+        self.keys_button = QPushButton("Keys")
+        self.game_button = QPushButton("Game")
+        for index, button in enumerate((self.keys_button, self.game_button)):
+            button.setCheckable(True)
+            button.setAutoExclusive(True)
+            button.clicked.connect(lambda _=False, i=index: self.show_section(i))
+            top.addWidget(button)
+        self.keys_button.setChecked(True)
+        top.addSpacing(16)
         top.addWidget(QLabel("PC keyboard layout:"))
         top.addWidget(self.layout_box)
         outer.addLayout(top)
+
+        self.sections = QStackedWidget()
+        outer.addWidget(self.sections, 1)
+        keys_page = QWidget()
+        keys_col = QVBoxLayout(keys_page)
+        keys_col.setContentsMargins(0, 0, 0, 0)
+        self.sections.addWidget(keys_page)
+        self.game = GamePage(self)
+        self.sections.addWidget(self.game)
 
         tab_row = QHBoxLayout()
         self.tab_bar = QTabBar()
@@ -621,7 +914,7 @@ class MainWindow(QMainWindow):
         tab_row.addStretch(1)
         tab_row.addWidget(QLabel("Tab name:"))
         tab_row.addWidget(self.tab_name)
-        outer.addLayout(tab_row)
+        keys_col.addLayout(tab_row)
 
         body = QHBoxLayout()
         grid = QGridLayout()
@@ -638,7 +931,7 @@ class MainWindow(QMainWindow):
         body.addLayout(grid, 1)
         body.addSpacing(6)
         body.addWidget(self._build_editor())
-        outer.addLayout(body, 1)
+        keys_col.addLayout(body, 1)
 
         bottom = QHBoxLayout()
         export_button = QPushButton("Export...")
@@ -653,7 +946,7 @@ class MainWindow(QMainWindow):
         bottom.addWidget(export_button)
         bottom.addWidget(import_button)
         bottom.addWidget(reset_button)
-        outer.addLayout(bottom)
+        keys_col.addLayout(bottom)
         self.tools = [export_button, import_button, reset_button]
 
     def _build_editor(self):
@@ -786,6 +1079,7 @@ class MainWindow(QMainWindow):
         try:
             self.link = PadLink(port)
             self.tabs, self.keys = self.link.read_all()
+            self.pad_tab = self.link.read_tab()
         except PermissionError:
             self.link = None
             self.set_online(False, f"No permission for {port}. Your user must be "
@@ -796,13 +1090,42 @@ class MainWindow(QMainWindow):
             return
         self.set_online(True, f"Connected on {port}")
         self.refresh()
+        self.game.refresh_state()
+
+    def poll_pad(self):
+        if not self.link:
+            return
+        try:
+            events = self.link.poll_events()
+        except PadError as err:
+            self.disconnected(str(err))
+            return
+        for event in events:
+            fields = event.split()
+            if len(fields) != 3:
+                continue
+            if fields[1] == "TAB":
+                self.pad_tab = int(fields[2])
+                if self.pad_tab != HOW_TAB:
+                    self.game.stop("Round stopped: the pad left the game tab.")
+                self.game.refresh_state()
+            elif fields[1] == "KEY":
+                self.game.key_pressed(int(fields[2]))
+
+    def show_section(self, index):
+        self.flush()
+        if index != 1:
+            self.game.stop("Round stopped.")
+        self.sections.setCurrentIndex(index)
 
     def disconnected(self, message):
         if self.link:
             self.link.close()
         self.link = None
+        self.pad_tab = None
         self.save_timer.stop()
         self.dirty = None
+        self.game.stop("Round stopped: connection lost.")
         self.set_online(False, message)
 
     def set_online(self, online, message):
@@ -813,6 +1136,7 @@ class MainWindow(QMainWindow):
         self.tab_name.setEnabled(online)
         for button in self.buttons + self.tools:
             button.setEnabled(online)
+        self.game.refresh_state()
 
     # ---- display ----
     def refresh(self):
@@ -1006,6 +1330,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         self.flush()
+        self.game.stop("")
         if self.link:
             self.link.close()
         super().closeEvent(event)
