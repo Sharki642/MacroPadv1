@@ -16,6 +16,8 @@
 #include <USBHIDKeyboard.h>
 #include <USBHIDMouse.h>
 #include <USBHIDConsumerControl.h>
+#include <USBCDC.h>
+#include <Preferences.h>
 
 // Fehlende Consumer-Konstanten (je nach arduino-esp32 Version)
 #ifndef CONSUMER_CONTROL_SLEEP
@@ -93,40 +95,189 @@ const int COL_PINS[4] = {15, 7, 6, 5};
 #define COL_ORANGE    0xFC00
 
 
-// MODI (3-Buchstaben-Abkürzungen)
+// MODI (3-Buchstaben-Abkürzungen, per App änderbar)
 enum Mode { GENERAL = 0, EASYEDA = 1, CHILL = 2, GAMING = 3 };
-const char*    MODE_NAMES[]  = {"GEN", "EDA", "CHL", "GAM"};
+#define NUM_TABS 4
+#define NUM_KEYS 16
+char           tabNames[NUM_TABS][4] = {"GEN", "EDA", "CHL", "GAM"};
 const uint16_t MODE_COLORS[] = {ST77XX_CYAN, ST77XX_GREEN, ST77XX_MAGENTA, COL_ORANGE};
 
 
-// TASTENBESCHRIFTUNGEN (Landscape 160x128, max 5 Zeichen)
-const char* KEY_LABELS[4][4][4] = { 
+// --- 16x16 BITMAPS FÜR DEN GENERAL TAB (PROGMEM) ---
+const unsigned char PROGMEM icon_gen[16][32] = {
+  // 0: FFOX (Globe/Firefox Style)
+  {0x00,0x00,0x07,0xE0,0x18,0x18,0x20,0x04,0x40,0x02,0x43,0xC2,0x84,0x21,0x88,0x11,
+   0x88,0x11,0x84,0x21,0x43,0xC2,0x40,0x02,0x20,0x04,0x18,0x18,0x07,0xE0,0x00,0x00},
+  // 1: EXPLR (Folder)
+  {0x00,0x00,0x00,0x00,0x3F,0x80,0x20,0x40,0x3F,0xFC,0x20,0x04,0x20,0x04,0x20,0x04,
+   0x20,0x04,0x20,0x04,0x20,0x04,0x20,0x04,0x3F,0xFC,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 2: SCRSH (Camera)
+  {0x00,0x00,0x00,0x00,0x0F,0xF0,0x10,0x08,0x3F,0xFC,0x21,0x04,0x25,0xA4,0x25,0xA4,
+   0x21,0x04,0x3F,0xFC,0x20,0x04,0x3F,0xFC,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 3: LOCK (Lock)
+  {0x00,0x00,0x00,0x00,0x07,0xE0,0x08,0x10,0x08,0x10,0x08,0x10,0x1F,0xF8,0x1B,0xB8,
+   0x1B,0xB8,0x1B,0xB8,0x1B,0xB8,0x1B,0xB8,0x1F,0xF8,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 4: UNDO (Back Arrow)
+  {0x00,0x00,0x00,0x00,0x01,0x80,0x03,0x00,0x07,0x00,0x0F,0xFF,0x0F,0x80,0x07,0x00,
+   0x03,0x00,0x01,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 5: REDO (Forward Arrow)
+  {0x00,0x00,0x00,0x00,0x18,0x00,0x0C,0x00,0x0E,0x00,0xFF,0xF0,0x01,0xF0,0x00,0xE0,
+   0x00,0xC0,0x01,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 6: COPY (Two Papers)
+  {0x00,0x00,0x00,0x00,0x1F,0xE0,0x10,0x20,0x1F,0xE0,0x10,0x20,0xFF,0xE0,0x80,0x20,
+   0x80,0x20,0x80,0x20,0x80,0x20,0x80,0x20,0xFF,0xE0,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 7: PASTE (Clipboard)
+  {0x00,0x00,0x00,0x00,0x07,0xE0,0x1C,0x38,0x3F,0xFC,0x20,0x04,0x20,0x04,0x20,0x04,
+   0x3F,0xFC,0x20,0x04,0x20,0x04,0x20,0x04,0x3F,0xFC,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 8: SAVE (Floppy Disk)
+  {0x00,0x00,0x00,0x00,0xFF,0xFF,0x80,0x01,0x8F,0xF1,0x81,0x01,0x80,0x01,0x80,0x01,
+   0x80,0x01,0x80,0x01,0x8F,0xF1,0x81,0x01,0xFF,0xFF,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 9: SEL A (Checkmark/All)
+  {0x00,0x00,0x00,0x00,0x00,0x02,0x00,0x06,0x00,0x0C,0x00,0x18,0x00,0x30,0x40,0x60,
+   0xE0,0xC0,0x71,0x80,0x3B,0x00,0x1E,0x00,0x0C,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 10: FIND (Magnifying Glass)
+  {0x00,0x00,0x00,0x00,0x07,0xC0,0x08,0x20,0x10,0x10,0x10,0x10,0x10,0x10,0x08,0x20,
+   0x07,0xC0,0x00,0x40,0x00,0x80,0x00,0x00,0x01,0x00,0x02,0x00,0x00,0x00,0x00,0x00},
+  // 11: CL TB (Close Window 'X')
+  {0x00,0x00,0x00,0x00,0x31,0x8C,0x1B,0xD8,0x0F,0xF0,0x06,0x60,0x0F,0xF0,0x1B,0xD8,
+   0x31,0x8C,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 12: NW TB (Plus Sign)
+  {0x00,0x00,0x00,0x00,0x01,0x80,0x01,0x80,0x01,0x80,0x01,0x80,0xFF,0xFF,0xFF,0xFF,
+   0x01,0x80,0x01,0x80,0x01,0x80,0x01,0x80,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 13: RP TB (Refresh Circle)
+  {0x00,0x00,0x00,0x00,0x0F,0xE0,0x30,0x18,0x40,0x04,0x80,0x02,0x80,0x02,0x86,0x02,
+   0x88,0x02,0x80,0x02,0x40,0x04,0x30,0x18,0x0F,0xE0,0x00,0x00,0x00,0x00,0x00,0x00},
+  // 14: AF4 (Power Button)
+  {0x00,0x00,0x00,0x00,0x07,0xE0,0x18,0x18,0x20,0x04,0x40,0x02,0x40,0x02,0x40,0x02,
+   0x40,0x02,0x20,0x04,0x18,0x18,0x07,0xE0,0x01,0x80,0x01,0x80,0x01,0x80,0x00,0x00},
+  // 15: DESK (Monitor Screen)
+  {0x00,0x00,0x00,0x00,0x7F,0xFE,0x40,0x02,0x40,0x02,0x40,0x02,0x40,0x02,0x40,0x02,
+   0x40,0x02,0x7F,0xFE,0x01,0x80,0x01,0x80,0x0F,0xF0,0x00,0x00,0x00,0x00,0x00,0x00}
+};
+
+
+// TASTEN-KONFIGURATION
+// Wird im Flash (NVS) gespeichert und von der PC-App geändert.
+// Tasten sind physische HID-Usages, damit das Layout (QWERTZ) keine Rolle spielt.
+#define LABEL_LEN   5
+#define MAX_TEXT   48
+
+enum ActionType : uint8_t { ACT_NONE = 0, ACT_KEY = 1, ACT_TEXT = 2, ACT_RUN = 3, ACT_MEDIA = 4, ACT_MOUSE = 5 };
+
+struct KeyConfig {
+  uint8_t  type;
+  uint8_t  mods;                 // Modifier-Bits (ACT_KEY)
+  uint16_t code;                 // HID-Usage / Consumer-Code / Maustaste
+  int8_t   icon;                 // Index in icon_gen, -1 = Text anzeigen
+  uint8_t  hold;                 // 1 = gedrückt halten statt antippen
+  char     label[LABEL_LEN + 1];
+  uint8_t  textLen;              // Anzahl Paare in text
+  uint8_t  text[MAX_TEXT * 2];   // Paare aus (mods, usage) für ACT_TEXT / ACT_RUN
+};
+
+#define M_CTRL   0x01
+#define M_SHIFT  0x02
+#define M_ALT    0x04
+#define M_GUI    0x08
+
+#define HID_LETTER(c) (uint16_t)((c) - 'a' + 0x04)
+#define HID_DE_Z   0x1C          // Taste "Z" auf QWERTZ
+#define HID_DE_Y   0x1D          // Taste "Y" auf QWERTZ
+#define HID_1      0x1E
+#define HID_ENTER  0x28
+#define HID_ESC    0x29
+#define HID_TAB    0x2B
+#define HID_F2     0x3B
+#define HID_F4     0x3D
+#define HID_DELETE 0x4C
+
+struct DefaultKey {
+  uint8_t     type;
+  uint8_t     mods;
+  uint16_t    code;
+  uint8_t     hold;
+  int8_t      icon;
+  const char* label;
+  const char* run;               // Nur Kleinbuchstaben a-x
+};
+
+const DefaultKey DEFAULT_KEYS[NUM_TABS][NUM_KEYS] = {
   // ---- GENERAL ----
-  {{"FFOX", "EXPLR", "SCRSH", "LOCK "},
-  {"UNDO",  "REDO",  "COPY",  "PASTE"},
-  {"SAVE",  "SEL A", "FIND",  "CL TB"},
-  {"NW TB", "RP TB", "AF4",   "DESK "}},
+  {{ACT_RUN, 0,                   0,                 0, -1, "FFOX",  "firefox"},
+   {ACT_KEY, M_GUI,               HID_LETTER('e'),   0,  1, "EXPLR", nullptr},
+   {ACT_KEY, M_GUI | M_SHIFT,     HID_LETTER('s'),   0, -1, "SCRSH", nullptr},
+   {ACT_KEY, M_GUI,               HID_LETTER('l'),   0,  3, "LOCK",  nullptr},
+   {ACT_KEY, M_CTRL,              HID_DE_Z,          0,  4, "UNDO",  nullptr},
+   {ACT_KEY, M_CTRL,              HID_DE_Y,          0,  5, "REDO",  nullptr},
+   {ACT_KEY, M_CTRL,              HID_LETTER('c'),   0, -1, "COPY",  nullptr},
+   {ACT_KEY, M_CTRL,              HID_LETTER('v'),   0, -1, "PASTE", nullptr},
+   {ACT_KEY, M_CTRL,              HID_LETTER('s'),   0, -1, "SAVE",  nullptr},
+   {ACT_KEY, M_CTRL,              HID_LETTER('a'),   0, -1, "SEL A", nullptr},
+   {ACT_KEY, M_CTRL,              HID_LETTER('f'),   0, -1, "FIND",  nullptr},
+   {ACT_KEY, M_CTRL,              HID_LETTER('w'),   0, -1, "CL TB", nullptr},
+   {ACT_KEY, M_CTRL,              HID_LETTER('t'),   0, -1, "NW TB", nullptr},
+   {ACT_KEY, M_CTRL | M_SHIFT,    HID_LETTER('t'),   0, -1, "RP TB", nullptr},
+   {ACT_KEY, M_ALT,               HID_F4,            0, -1, "AF4",   nullptr},
+   {ACT_KEY, M_GUI,               HID_LETTER('d'),   0, 15, "DESK",  nullptr}},
   // ---- EASYEDA ----
-  {{"WIRE",  "PLACE", "ROT",   "FLIP "},
-  {"UNDO",  "REDO",  "COPY",  "PASTE"},
-  {"SAVE",  "DEL",   "SEL A", "ESC  "},
-  {"GND",   "PWR",   "NET",   "BUS  "}},
+  {{ACT_KEY, 0,                   HID_LETTER('w'),   0, -1, "WIRE",  nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('p'),   0, -1, "PLACE", nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('r'),   0, -1, "ROT",   nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('x'),   0, -1, "FLIP",  nullptr},
+   {ACT_KEY, M_CTRL,              HID_DE_Z,          0, -1, "UNDO",  nullptr},
+   {ACT_KEY, M_CTRL,              HID_DE_Y,          0, -1, "REDO",  nullptr},
+   {ACT_KEY, M_CTRL,              HID_LETTER('c'),   0, -1, "COPY",  nullptr},
+   {ACT_KEY, M_CTRL,              HID_LETTER('v'),   0, -1, "PASTE", nullptr},
+   {ACT_KEY, M_CTRL,              HID_LETTER('s'),   0, -1, "SAVE",  nullptr},
+   {ACT_KEY, 0,                   HID_DELETE,        0, -1, "DEL",   nullptr},
+   {ACT_KEY, M_CTRL,              HID_LETTER('a'),   0, -1, "SEL A", nullptr},
+   {ACT_KEY, 0,                   HID_ESC,           0, -1, "ESC",   nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('g'),   0, -1, "GND",   nullptr},
+   {ACT_KEY, M_CTRL | M_SHIFT,    HID_LETTER('p'),   0, -1, "PWR",   nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('n'),   0, -1, "NET",   nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('b'),   0, -1, "BUS",   nullptr}},
   // ---- CHILL ----
-  {{"PLAY",  "NEXT",  "PREV",  "STOP "},
-  {"MUTE",  "VOL+",  "VOL-",  "SCRSH"},
-  {"LOCK",  "CALC",  "HOME",  "BACK "},
-  {"FWD",   "RFRSH", "B.HM",  "SLEEP"}},
+  {{ACT_MEDIA, 0, CONSUMER_CONTROL_PLAY_PAUSE,       0, -1, "PLAY",  nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_SCAN_NEXT,        0, -1, "NEXT",  nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_SCAN_PREVIOUS,    0, -1, "PREV",  nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_STOP,             0, -1, "STOP",  nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_MUTE,             0, -1, "MUTE",  nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_VOLUME_INCREMENT, 0, -1, "VOL+",  nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_VOLUME_DECREMENT, 0, -1, "VOL-",  nullptr},
+   {ACT_KEY, M_GUI | M_SHIFT,     HID_LETTER('s'),   0, -1, "SCRSH", nullptr},
+   {ACT_KEY, M_GUI,               HID_LETTER('l'),   0, -1, "LOCK",  nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_CALCULATOR,       0, -1, "CALC",  nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_BROWSER_HOME,     0, -1, "HOME",  nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_BROWSER_BACK,     0, -1, "BACK",  nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_BROWSER_FORWARD,  0, -1, "FWD",   nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_BROWSER_REFRESH,  0, -1, "RFRSH", nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_BROWSER_HOME,     0, -1, "B.HM",  nullptr},
+   {ACT_MEDIA, 0, CONSUMER_CONTROL_SLEEP,            0, -1, "SLEEP", nullptr}},
   // ---- GAMING ----
-  {{"SL 1",  "SL 2",  "SL 3",  "SL 4 "},
-  {"Q",     "E",     "R",     "F    "},
-  {"TAB",   "MAP",   "ESC",   "SCRSH"},
-  {"PTT",   "CROUC", "SPRNT", "PRONE"}}
+  {{ACT_KEY, 0,                   HID_1,             1, -1, "SL 1",  nullptr},
+   {ACT_KEY, 0,                   HID_1 + 1,         1, -1, "SL 2",  nullptr},
+   {ACT_KEY, 0,                   HID_1 + 2,         1, -1, "SL 3",  nullptr},
+   {ACT_KEY, 0,                   HID_1 + 3,         1, -1, "SL 4",  nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('q'),   1, -1, "Q",     nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('e'),   1, -1, "E",     nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('r'),   1, -1, "R",     nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('f'),   1, -1, "F",     nullptr},
+   {ACT_KEY, 0,                   HID_TAB,           1, -1, "TAB",   nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('m'),   1, -1, "MAP",   nullptr},
+   {ACT_KEY, 0,                   HID_ESC,           1, -1, "ESC",   nullptr},
+   {ACT_KEY, M_GUI | M_SHIFT,     HID_LETTER('s'),   0, -1, "SCRSH", nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('t'),   1, -1, "PTT",   nullptr},
+   {ACT_KEY, 0,                   HID_LETTER('c'),   1, -1, "CROUC", nullptr},
+   {ACT_KEY, M_SHIFT,             0,                 1, -1, "SPRNT", nullptr},
+   {ACT_KEY, 0,                   HID_DE_Z,          1, -1, "PRONE", nullptr}}
 };
 
 // HID + DISPLAY OBJEKTE
 USBHIDKeyboard        Keyboard;
 USBHIDMouse           Mouse;
 USBHIDConsumerControl Consumer;
+USBCDC                ConfigPort;
+Preferences           prefs;
 Adafruit_ST7735       tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_MOSI, TFT_SCLK, TFT_RST);
 
 
@@ -135,6 +286,12 @@ int          currentMode        = GENERAL;
 bool         keyState[4][4]     = {};
 unsigned long keyDebounce[4][4] = {};
 String       lastAction         = "Ready";
+KeyConfig    keyConfig[NUM_TABS][NUM_KEYS];
+
+// Merkt sich gehaltene Tasten, damit das Loslassen auch nach Tabwechsel stimmt
+struct HeldKey { uint8_t type; uint8_t mods; uint16_t code; };
+HeldKey      heldKeys[4][4]     = {};
+uint8_t      modCount[8]        = {};
 
 int  joyCenter_X  = 2048, joyCenter_Y = 2048;
 bool joyBtnLast   = false;
@@ -182,135 +339,79 @@ int8_t axisToSpeed(int raw, int center) {
   return (int8_t)(d > 0 ? spd : -spd);
 }
 
-inline void key1(uint8_t k) {
-  Keyboard.releaseAll(); delay(5);
-  Keyboard.press(k); delay(15); Keyboard.releaseAll();
+// Modifier zählen, damit zwei gehaltene Tasten sich nicht gegenseitig lösen
+void modsDown(uint8_t mods) {
+  for (int b = 0; b < 8; b++) {
+    if ((mods & (1 << b)) && modCount[b]++ == 0) Keyboard.press(0x80 + b);
+  }
 }
-inline void key2(uint8_t m, uint8_t k) {
-  Keyboard.releaseAll(); delay(5);
-  Keyboard.press(m); Keyboard.press(k); delay(15); Keyboard.releaseAll();
-}
-inline void key3(uint8_t m1, uint8_t m2, uint8_t k) {
-  Keyboard.releaseAll(); delay(5);
-  Keyboard.press(m1); Keyboard.press(m2); Keyboard.press(k); delay(15); Keyboard.releaseAll();
+void modsUp(uint8_t mods) {
+  for (int b = 0; b < 8; b++) {
+    if ((mods & (1 << b)) && modCount[b] > 0 && --modCount[b] == 0) Keyboard.release(0x80 + b);
+  }
 }
 
-void winRun(const char* cmd) {
-  Keyboard.releaseAll();
-  Keyboard.press(KEY_LEFT_GUI); Keyboard.press('r');
-  delay(200); Keyboard.releaseAll();
+void tapKey(uint8_t mods, uint8_t code) {
+  modsDown(mods);
+  if (code) Keyboard.pressRaw(code);
+  delay(15);
+  if (code) Keyboard.releaseRaw(code);
+  modsUp(mods);
+  delay(5);
+}
+
+void typeText(const KeyConfig& cfg) {
+  for (int i = 0; i < cfg.textLen; i++) tapKey(cfg.text[i * 2], cfg.text[i * 2 + 1]);
+}
+
+void linuxRun(const KeyConfig& cfg) {
+  tapKey(M_ALT, HID_F2);
   delay(600);
-  Keyboard.print(cmd);
-  delay(150);
-  Keyboard.write(KEY_RETURN);
-}
-
-void linuxRun(const char* cmd) {
-  Keyboard.releaseAll();
-  Keyboard.press(KEY_LEFT_ALT); Keyboard.press(KEY_F2);
-  delay(100); Keyboard.releaseAll();
-  delay(500);                    
-  Keyboard.print(cmd);
+  typeText(cfg);
   delay(300);
-  Keyboard.write(KEY_RETURN);
+  tapKey(0, HID_ENTER);
 }
 
 // TASTENAKTIONEN
-void doGeneral(int r, int c) {
-  switch (r * 4 + c) {
-    case  0: linuxRun("firefox"); break;                       
-    case  1: key2(KEY_LEFT_GUI, 'e'); break;                   
-    case  2: key3(KEY_LEFT_GUI, KEY_LEFT_SHIFT, 's'); break;   
-    case  3: key2(KEY_LEFT_GUI, 'l'); break;                   
-    case  4: key2(KEY_LEFT_CTRL, 'z'); break;                  
-    case  5: key2(KEY_LEFT_CTRL, 'y'); break;                  
-    case  6: key2(KEY_LEFT_CTRL, 'c'); break;                  
-    case  7: key2(KEY_LEFT_CTRL, 'v'); break;                  
-    case  8: key2(KEY_LEFT_CTRL, 's'); break;                  
-    case  9: key2(KEY_LEFT_CTRL, 'a'); break;                  
-    case 10: key2(KEY_LEFT_CTRL, 'f'); break;                  
-    case 11: key2(KEY_LEFT_CTRL, 'w'); break;                  
-    case 12: key2(KEY_LEFT_CTRL, 't'); break;                  
-    case 13: key3(KEY_LEFT_CTRL, KEY_LEFT_SHIFT, 't'); break;  
-    case 14: key2(KEY_LEFT_ALT, KEY_F4); break;                
-    case 15: key2(KEY_LEFT_GUI, 'd'); break;                   
+void pressAction(int r, int c) {
+  const KeyConfig& cfg = keyConfig[currentMode][r * 4 + c];
+  lastAction = String(cfg.label);
+  switch (cfg.type) {
+    case ACT_KEY:
+      if (cfg.hold) {
+        heldKeys[r][c] = {ACT_KEY, cfg.mods, cfg.code};
+        modsDown(cfg.mods);
+        if (cfg.code) Keyboard.pressRaw(cfg.code);
+      } else {
+        tapKey(cfg.mods, cfg.code);
+      }
+      break;
+    case ACT_TEXT:  typeText(cfg); break;
+    case ACT_RUN:   linuxRun(cfg); break;
+    case ACT_MEDIA: sendConsumerStep(cfg.code); break;
+    case ACT_MOUSE:
+      if (cfg.hold) {
+        heldKeys[r][c] = {ACT_MOUSE, 0, cfg.code};
+        Mouse.press(cfg.code);
+      } else {
+        Mouse.click(cfg.code);
+      }
+      break;
   }
 }
 
-void doEasyEDA(int r, int c) {
-  switch (r * 4 + c) {
-    case  0: key1('w'); break;                                 
-    case  1: key1('p'); break;                                 
-    case  2: key1('r'); break;                                 
-    case  3: key1('x'); break;                                 
-    case  4: key2(KEY_LEFT_CTRL, 'z'); break;                  
-    case  5: key2(KEY_LEFT_CTRL, 'y'); break;                  
-    case  6: key2(KEY_LEFT_CTRL, 'c'); break;                  
-    case  7: key2(KEY_LEFT_CTRL, 'v'); break;                  
-    case  8: key2(KEY_LEFT_CTRL, 's'); break;                  
-    case  9: key1(KEY_DELETE); break;                          
-    case 10: key2(KEY_LEFT_CTRL, 'a'); break;                  
-    case 11: key1(KEY_ESC); break;                             
-    case 12: key1('g'); break;                                 
-    case 13: key3(KEY_LEFT_CTRL, KEY_LEFT_SHIFT, 'p'); break;  
-    case 14: key1('n'); break;                                 
-    case 15: key1('b'); break;                                 
+void releaseAction(int r, int c) {
+  HeldKey& held = heldKeys[r][c];
+  if (held.type == ACT_KEY) {
+    if (held.code) Keyboard.releaseRaw(held.code);
+    modsUp(held.mods);
+  } else if (held.type == ACT_MOUSE) {
+    Mouse.release(held.code);
   }
+  held.type = ACT_NONE;
 }
 
-void doChill(int r, int c) {
-  switch (r * 4 + c) {
-    case  0: sendConsumerStep(CONSUMER_CONTROL_PLAY_PAUSE); break;
-    case  1: sendConsumerStep(CONSUMER_CONTROL_SCAN_NEXT); break;
-    case  2: sendConsumerStep(CONSUMER_CONTROL_SCAN_PREVIOUS); break;
-    case  3: sendConsumerStep(CONSUMER_CONTROL_STOP); break;
-    case  4: sendConsumerStep(CONSUMER_CONTROL_MUTE); break;
-    case  5: sendConsumerStep(CONSUMER_CONTROL_VOLUME_INCREMENT); break;
-    case  6: sendConsumerStep(CONSUMER_CONTROL_VOLUME_DECREMENT); break;
-    case  7: key3(KEY_LEFT_GUI, KEY_LEFT_SHIFT, 's'); break;   
-    case  8: key2(KEY_LEFT_GUI, 'l'); break;                   
-    case  9: sendConsumerStep(CONSUMER_CONTROL_CALCULATOR); break;
-    case 10: sendConsumerStep(CONSUMER_CONTROL_BROWSER_HOME); break;
-    case 11: sendConsumerStep(CONSUMER_CONTROL_BROWSER_BACK); break;
-    case 12: sendConsumerStep(CONSUMER_CONTROL_BROWSER_FORWARD); break;
-    case 13: sendConsumerStep(CONSUMER_CONTROL_BROWSER_REFRESH); break;
-    case 14: sendConsumerStep(CONSUMER_CONTROL_BROWSER_HOME); break;
-    case 15: sendConsumerStep(CONSUMER_CONTROL_SLEEP); break;
-  }
-}
-
-void doGaming(int r, int c) {
-  switch (r * 4 + c) {
-    case  0: key1('1'); break;
-    case  1: key1('2'); break;
-    case  2: key1('3'); break;
-    case  3: key1('4'); break;
-    case  4: key1('q'); break;
-    case  5: key1('e'); break;
-    case  6: key1('r'); break;
-    case  7: key1('f'); break;
-    case  8: key1(KEY_TAB); break;                             
-    case  9: key1('m'); break;                                 
-    case 10: key1(KEY_ESC); break;                             
-    case 11: key3(KEY_LEFT_GUI, KEY_LEFT_SHIFT, 's'); break;   
-    case 12: key1('t'); break;                                 
-    case 13: key1('c'); break;                                 
-    case 14: key1(KEY_LEFT_SHIFT); break;                      
-    case 15: key1('z'); break;                                 
-  }
-}
-
-void executeAction(int mode, int r, int c) {
-  lastAction = String(KEY_LABELS[mode][r][c]);
-  switch (mode) {
-    case GENERAL: doGeneral(r, c); break;
-    case EASYEDA: doEasyEDA(r, c); break;
-    case CHILL:   doChill(r, c);   break;
-    case GAMING:  doGaming(r, c);  break;
-  }
-}
-
-// Ultra-lange, kompakte Balken für maximale Ausnutzung
+// Ultra-lange, kompakte Balken
 void drawPotiBarInline(int x, int y, const char* label, uint16_t color, int pct) {
   tft.fillRect(x, y, 122, 10, ST77XX_BLACK);
   tft.setTextSize(1);
@@ -318,7 +419,6 @@ void drawPotiBarInline(int x, int y, const char* label, uint16_t color, int pct)
   tft.setCursor(x, y + 1);
   tft.print(label);
   
-  // Langer Balken der komplett bis zum rechten Rand ausnutzt
   int barX = x + 12;
   int barW = 84; 
   tft.fillRect(barX, y + 2, barW, 6, 0x2104);
@@ -334,44 +434,48 @@ void drawPotiBarInline(int x, int y, const char* label, uint16_t color, int pct)
   tft.print("%");
 }
 
-void drawKeyGrid() {
-  const int startY = 26; // Startet direkt unter dem schlanken Header
+void drawKeyCell(int index) {
+  const int startY = 26; 
   const int cellW  = 40;
-  const int cellH  = 25; // Riesige Tastenhöhe (25px * 4 = 100px) für maximale Lesbarkeit
-  for (int r = 0; r < 4; r++) {
-    for (int c = 0; c < 4; c++) {
-      int x = c * cellW;
-      int y = startY + r * cellH;
-      tft.fillRect(x, y, cellW, cellH, 0x1082);
-      tft.drawRect(x, y, cellW, cellH, COL_DARKGRAY);
-      const char* lbl = KEY_LABELS[currentMode][r][c];
-      int len = strlen(lbl);
-      while (len > 0 && lbl[len - 1] == ' ') len--;
-      int textX = x + (cellW - len * 6) / 2;
-      int textY = y + (cellH - 7) / 2;
-      tft.setTextColor(ST77XX_WHITE);
-      tft.setTextSize(1);
-      tft.setCursor(textX, textY);
-      for (int i = 0; i < len; i++) tft.write(lbl[i]);
-    }
+  const int cellH  = 25; 
+  int x = (index % 4) * cellW;
+  int y = startY + (index / 4) * cellH;
+  const KeyConfig& cfg = keyConfig[currentMode][index];
+
+  tft.fillRect(x, y, cellW, cellH, 0x1082);
+  tft.drawRect(x, y, cellW, cellH, COL_DARKGRAY);
+
+  // Mit Icon: Bitmap zeichnen, sonst Text
+  if (cfg.icon >= 0 && cfg.icon < 16) {
+    // Zeichnet das 16x16 Icon zentriert in die Taste
+    tft.drawBitmap(x + 12, y + 4, icon_gen[cfg.icon], 16, 16, MODE_COLORS[currentMode]);
+  } else {
+    int len = strlen(cfg.label);
+    int textX = x + (cellW - len * 6) / 2;
+    int textY = y + (cellH - 7) / 2;
+    tft.setTextColor(ST77XX_WHITE);
+    tft.setTextSize(1);
+    tft.setCursor(textX, textY);
+    tft.print(cfg.label);
   }
+}
+
+void drawKeyGrid() {
+  for (int i = 0; i < NUM_KEYS; i++) drawKeyCell(i);
 }
 
 void drawBaseUI() {
   tft.fillScreen(ST77XX_BLACK);
 
-  // Oben links: Exakter 3-Buchstaben-Hintergrund (genau 36px breit für 3 Zeichen in Size 2)
   tft.fillRect(0, 0, 36, 24, COL_NAVY);
   tft.setTextColor(MODE_COLORS[currentMode]);
   tft.setTextSize(2);
   tft.setCursor(2, 5);
-  tft.print(MODE_NAMES[currentMode]);
+  tft.print(tabNames[currentMode]);
 
-  // Direkt daneben: Vol und Bri Balken über die volle verbleibende Breite
   drawPotiBarInline(38, 2,  "V", ST77XX_MAGENTA, potiToPercent(PIN_VOL_POTI));
   drawPotiBarInline(38, 13, "B", 0x07FF,         potiToPercent(PIN_BRI_POTI));
 
-  // Trennlinie unter dem Header
   tft.drawFastHLine(0, 24, 160, MODE_COLORS[currentMode]);
 
   drawKeyGrid();
@@ -416,6 +520,172 @@ void handlePotis() {
   if (briDisp != lastBriDisp) { drawPotiBarInline(38, 13, "B", 0x07FF,         briDisp); lastBriDisp = briDisp; }
 }
 
+// KONFIGURATION IM FLASH
+void loadDefaultKey(int tab, int key) {
+  const DefaultKey& def = DEFAULT_KEYS[tab][key];
+  KeyConfig& cfg = keyConfig[tab][key];
+  memset(&cfg, 0, sizeof(cfg));
+  cfg.type = def.type;
+  cfg.mods = def.mods;
+  cfg.code = def.code;
+  cfg.hold = def.hold;
+  cfg.icon = def.icon;
+  strncpy(cfg.label, def.label, LABEL_LEN);
+  for (const char* p = def.run; p && *p; p++) {
+    cfg.text[cfg.textLen * 2 + 1] = HID_LETTER(*p);
+    cfg.textLen++;
+  }
+}
+
+void loadConfig() {
+  prefs.begin("macropad", false);
+  for (int t = 0; t < NUM_TABS; t++) {
+    for (int k = 0; k < NUM_KEYS; k++) {
+      loadDefaultKey(t, k);
+      char name[8];
+      snprintf(name, sizeof(name), "k%d", t * NUM_KEYS + k);
+      KeyConfig stored;
+      size_t got = prefs.getBytes(name, &stored, sizeof(stored));
+      if (got >= offsetof(KeyConfig, text) && stored.textLen <= MAX_TEXT
+          && got == offsetof(KeyConfig, text) + stored.textLen * 2) {
+        memset(&keyConfig[t][k], 0, sizeof(KeyConfig));
+        memcpy(&keyConfig[t][k], &stored, got);
+      }
+    }
+    char name[8];
+    snprintf(name, sizeof(name), "t%d", t);
+    if (prefs.isKey(name)) prefs.getString(name, tabNames[t], sizeof(tabNames[t]));
+  }
+}
+
+bool saveKey(int t, int k) {
+  char name[8];
+  snprintf(name, sizeof(name), "k%d", t * NUM_KEYS + k);
+  size_t len = offsetof(KeyConfig, text) + keyConfig[t][k].textLen * 2;
+  return prefs.putBytes(name, &keyConfig[t][k], len) == len;
+}
+
+// KONFIGURATIONS-PROTOKOLL (Zeilen über USB-Serial)
+//   HELLO                                        -> MACROPAD 1
+//   GET                                          -> TAB ... / KEY ... / END
+//   SET tab key type mods code icon hold lbl txt -> OK | ERR
+//   NAME tab name                                -> OK | ERR
+//   RESET                                        -> OK
+// lbl und txt sind Hex-Strings, "-" steht für leer.
+void printHex(const uint8_t* data, int len) {
+  if (len == 0) { ConfigPort.print("-"); return; }
+  for (int i = 0; i < len; i++) {
+    if (data[i] < 0x10) ConfigPort.print('0');
+    ConfigPort.print(data[i], HEX);
+  }
+}
+
+int parseHex(const char* s, uint8_t* out, int maxLen) {
+  if (!s) return -1;
+  if (strcmp(s, "-") == 0) return 0;
+  int len = strlen(s);
+  if (len % 2 != 0 || len / 2 > maxLen) return -1;
+  for (int i = 0; i < len; i += 2) {
+    char byteStr[3] = {s[i], s[i + 1], 0};
+    char* end;
+    out[i / 2] = (uint8_t)strtoul(byteStr, &end, 16);
+    if (*end != 0) return -1;
+  }
+  return len / 2;
+}
+
+void cmdGet() {
+  for (int t = 0; t < NUM_TABS; t++) {
+    ConfigPort.printf("TAB %d %s\n", t, tabNames[t]);
+    for (int k = 0; k < NUM_KEYS; k++) {
+      const KeyConfig& cfg = keyConfig[t][k];
+      ConfigPort.printf("KEY %d %d %d %d %d %d %d ", t, k, cfg.type, cfg.mods, cfg.code, cfg.icon, cfg.hold);
+      printHex((const uint8_t*)cfg.label, strlen(cfg.label));
+      ConfigPort.print(" ");
+      printHex(cfg.text, cfg.textLen * 2);
+      ConfigPort.print("\n");
+    }
+  }
+  ConfigPort.print("END\n");
+}
+
+bool cmdSet() {
+  const char* f[9];
+  for (int i = 0; i < 9; i++) f[i] = strtok(nullptr, " ");
+  if (!f[8]) return false;
+  int t = atoi(f[0]), k = atoi(f[1]), type = atoi(f[2]), icon = atoi(f[5]);
+  if (t < 0 || t >= NUM_TABS || k < 0 || k >= NUM_KEYS) return false;
+  if (type < ACT_NONE || type > ACT_MOUSE || icon < -1 || icon > 15) return false;
+
+  KeyConfig cfg;
+  memset(&cfg, 0, sizeof(cfg));
+  cfg.type = type;
+  cfg.mods = atoi(f[3]);
+  cfg.code = atoi(f[4]);
+  cfg.icon = icon;
+  cfg.hold = atoi(f[6]) ? 1 : 0;
+  if (parseHex(f[7], (uint8_t*)cfg.label, LABEL_LEN) < 0) return false;
+  int textBytes = parseHex(f[8], cfg.text, MAX_TEXT * 2);
+  if (textBytes < 0 || textBytes % 2 != 0) return false;
+  cfg.textLen = textBytes / 2;
+
+  keyConfig[t][k] = cfg;
+  if (!saveKey(t, k)) return false;
+  if (t == currentMode) drawKeyCell(k);
+  return true;
+}
+
+bool cmdName() {
+  const char* tab = strtok(nullptr, " ");
+  const char* name = strtok(nullptr, " ");
+  if (!tab || !name || strlen(name) > 3) return false;
+  int t = atoi(tab);
+  if (t < 0 || t >= NUM_TABS) return false;
+  strcpy(tabNames[t], name);
+  char key[8];
+  snprintf(key, sizeof(key), "t%d", t);
+  prefs.putString(key, name);
+  if (t == currentMode) drawBaseUI();
+  return true;
+}
+
+void cmdReset() {
+  prefs.clear();
+  const char* names[NUM_TABS] = {"GEN", "EDA", "CHL", "GAM"};
+  for (int t = 0; t < NUM_TABS; t++) {
+    strcpy(tabNames[t], names[t]);
+    for (int k = 0; k < NUM_KEYS; k++) loadDefaultKey(t, k);
+  }
+  drawBaseUI();
+}
+
+void handleCommand(char* line) {
+  const char* cmd = strtok(line, " ");
+  if (!cmd) return;
+  if (strcmp(cmd, "HELLO") == 0)      ConfigPort.print("MACROPAD 1\n");
+  else if (strcmp(cmd, "GET") == 0)   cmdGet();
+  else if (strcmp(cmd, "SET") == 0)   ConfigPort.print(cmdSet()  ? "OK\n" : "ERR\n");
+  else if (strcmp(cmd, "NAME") == 0)  ConfigPort.print(cmdName() ? "OK\n" : "ERR\n");
+  else if (strcmp(cmd, "RESET") == 0) { cmdReset(); ConfigPort.print("OK\n"); }
+  else ConfigPort.print("ERR\n");
+}
+
+void handleConfigPort() {
+  static char buf[300];
+  static int  len = 0;
+  while (ConfigPort.available()) {
+    char ch = ConfigPort.read();
+    if (ch == '\r') continue;
+    if (ch == '\n') {
+      buf[len] = 0;
+      len = 0;
+      handleCommand(buf);
+    } else if (len < (int)sizeof(buf) - 1) {
+      buf[len++] = ch;
+    }
+  }
+}
+
 // JOYSTICK
 void calibrateJoystick() {
   delay(100);
@@ -457,11 +727,11 @@ void handleJoystick() {
   if (dx != 0 || dy != 0) Mouse.move(dx, dy, 0);
 
   bool btnNow = (digitalRead(PIN_JOY_BTN) == LOW);
-  if (btnNow && !joyBtnLast && (now - joyBtnTime > JOY_BTN_DEBOUNCE)) {
+  if (btnNow != joyBtnLast && (now - joyBtnTime > JOY_BTN_DEBOUNCE)) {
     joyBtnTime = now;
-    Mouse.click(MOUSE_LEFT);
+    joyBtnLast = btnNow;
+    if (btnNow) Mouse.click(MOUSE_LEFT);
   }
-  joyBtnLast = btnNow;
 }
 
 void handleModeButton() {
@@ -471,16 +741,19 @@ void handleModeButton() {
   bool pressed = (digitalRead(PIN_MODE_BTN) == LOW);
   unsigned long now = millis();
 
-  if (pressed && !lastPressed && (now - lastTime > DEBOUNCE_MS)) {
+  if (pressed != lastPressed && (now - lastTime > DEBOUNCE_MS)) {
     lastTime    = now;
-    currentMode = (currentMode + 1) % 4;
-    lastAction  = String("-> ") + MODE_NAMES[currentMode];
-    drawBaseUI();
+    lastPressed = pressed;
+    if (pressed) {
+      currentMode = (currentMode + 1) % 4;
+      lastAction  = String("-> ") + tabNames[currentMode];
+      drawBaseUI();
+    }
   }
-  lastPressed = pressed;
 }
 
 void setup() {
+  ConfigPort.begin();
   USB.begin();
   Keyboard.begin();
   Mouse.begin();
@@ -515,6 +788,7 @@ void setup() {
 
   analogReadResolution(12);
   calibrateJoystick();
+  loadConfig();
 
   sentVol = potiToSteps(PIN_VOL_POTI, VOL_MAX_STEPS);
   sentBri = potiToSteps(PIN_BRI_POTI, BRI_MAX_STEPS);
@@ -528,6 +802,7 @@ void loop() {
   handleJoystick();
   handlePotis();
   handleModeButton();
+  handleConfigPort();
 
   for (int r = 0; r < 4; r++) {
     digitalWrite(ROW_PINS[r], LOW);
@@ -536,14 +811,11 @@ void loop() {
     for (int c = 0; c < 4; c++) {
       bool pressed = (digitalRead(COL_PINS[c]) == LOW);
 
-      if (pressed && !keyState[r][c] && (now - keyDebounce[r][c] > DEBOUNCE_MS)) {
+      if (pressed != keyState[r][c] && (now - keyDebounce[r][c] > DEBOUNCE_MS)) {
         keyDebounce[r][c] = now;
-        keyState[r][c]    = true;
-        executeAction(currentMode, r, c);
-        // (updateLastAction wurde entfernt)
-
-      } else if (!pressed && keyState[r][c]) {
-        keyState[r][c] = false;
+        keyState[r][c]    = pressed;
+        if (pressed) pressAction(r, c);
+        else         releaseAction(r, c);
       }
     }
 
