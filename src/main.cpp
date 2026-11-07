@@ -89,10 +89,26 @@ const int COL_PINS[4] = {15, 7, 6, 5};
 
 
 // FARBEN (RGB565)
-#define COL_NAVY      0x000F
-#define COL_DARKGRAY  0x4208
 #define COL_MIDGRAY   0x8410
-#define COL_ORANGE    0xFC00
+
+// Per App änderbar, gleiche Reihenfolge wie die C_*-Konstanten in der App
+enum ColorSlot {
+  C_VOL, C_BRI,
+  C_TAB, C_TAB_LAST = C_TAB + 3,  // Akzentfarbe je Tab
+  C_HEADER, C_BG,
+  C_KEY_BG, C_BORDER, C_KEY_TEXT,
+  C_VALUE, C_TRACK,
+  NUM_COLORS
+};
+const uint16_t DEFAULT_COLORS[NUM_COLORS] = {
+  ST77XX_MAGENTA, 0x07FF,
+  ST77XX_CYAN, ST77XX_GREEN, ST77XX_MAGENTA, 0xFC00,
+  0x000F, ST77XX_BLACK,
+  0x1082, 0x4208, ST77XX_WHITE,
+  ST77XX_WHITE, 0x2104
+};
+uint16_t colors[NUM_COLORS];
+#define MODE_COLOR colors[C_TAB + currentMode]
 
 
 // MODI (3-Buchstaben-Abkürzungen, per App änderbar)
@@ -100,7 +116,6 @@ enum Mode { GENERAL = 0, EASYEDA = 1, HOW = 2, GAMING = 3 };
 #define NUM_TABS 4
 #define NUM_KEYS 16
 char           tabNames[NUM_TABS][4] = {"GEN", "EDA", "HOW", "GAM"};
-const uint16_t MODE_COLORS[] = {ST77XX_CYAN, ST77XX_GREEN, ST77XX_MAGENTA, COL_ORANGE};
 
 
 // --- 16x16 BITMAPS FÜR DEN GENERAL TAB (PROGMEM) ---
@@ -421,7 +436,7 @@ void releaseAction(int r, int c) {
 
 // Ultra-lange, kompakte Balken
 void drawPotiBarInline(int x, int y, const char* label, uint16_t color, int pct) {
-  tft.fillRect(x, y, 122, 10, ST77XX_BLACK);
+  tft.fillRect(x, y, 122, 10, colors[C_BG]);
   tft.setTextSize(1);
   tft.setTextColor(color);
   tft.setCursor(x, y + 1);
@@ -429,12 +444,12 @@ void drawPotiBarInline(int x, int y, const char* label, uint16_t color, int pct)
   
   int barX = x + 12;
   int barW = 84; 
-  tft.fillRect(barX, y + 2, barW, 6, 0x2104);
-  tft.drawRect(barX, y + 2, barW, 6, COL_DARKGRAY);
+  tft.fillRect(barX, y + 2, barW, 6, colors[C_TRACK]);
+  tft.drawRect(barX, y + 2, barW, 6, colors[C_BORDER]);
   int fillW = map(pct, 0, 100, 0, barW - 2);
   if (fillW > 0) tft.fillRect(barX + 1, y + 3, fillW, 4, color);
   
-  tft.setTextColor(ST77XX_WHITE);
+  tft.setTextColor(colors[C_VALUE]);
   tft.setCursor(barX + barW + 4, y + 1);
   if (pct < 100) tft.print(" ");
   if (pct < 10)  tft.print(" ");
@@ -450,18 +465,18 @@ void drawKeyCell(int index) {
   int y = startY + (index / 4) * cellH;
   const KeyConfig& cfg = keyConfig[currentMode][index];
 
-  tft.fillRect(x, y, cellW, cellH, 0x1082);
-  tft.drawRect(x, y, cellW, cellH, COL_DARKGRAY);
+  tft.fillRect(x, y, cellW, cellH, colors[C_KEY_BG]);
+  tft.drawRect(x, y, cellW, cellH, colors[C_BORDER]);
 
   // Mit Icon: Bitmap zeichnen, sonst Text
   if (cfg.icon >= 0 && cfg.icon < 16) {
     // Zeichnet das 16x16 Icon zentriert in die Taste
-    tft.drawBitmap(x + 12, y + 4, icon_gen[cfg.icon], 16, 16, MODE_COLORS[currentMode]);
+    tft.drawBitmap(x + 12, y + 4, icon_gen[cfg.icon], 16, 16, MODE_COLOR);
   } else {
     int len = strlen(cfg.label);
     int textX = x + (cellW - len * 6) / 2;
     int textY = y + (cellH - 7) / 2;
-    tft.setTextColor(ST77XX_WHITE);
+    tft.setTextColor(colors[C_KEY_TEXT]);
     tft.setTextSize(1);
     tft.setCursor(textX, textY);
     tft.print(cfg.label);
@@ -473,18 +488,18 @@ void drawKeyGrid() {
 }
 
 void drawBaseUI() {
-  tft.fillScreen(ST77XX_BLACK);
+  tft.fillScreen(colors[C_BG]);
 
-  tft.fillRect(0, 0, 36, 24, COL_NAVY);
-  tft.setTextColor(MODE_COLORS[currentMode]);
+  tft.fillRect(0, 0, 36, 24, colors[C_HEADER]);
+  tft.setTextColor(MODE_COLOR);
   tft.setTextSize(2);
   tft.setCursor(2, 5);
   tft.print(tabNames[currentMode]);
 
-  drawPotiBarInline(38, 2,  "V", ST77XX_MAGENTA, potiToPercent(PIN_VOL_POTI));
-  drawPotiBarInline(38, 13, "B", 0x07FF,         potiToPercent(PIN_BRI_POTI));
+  drawPotiBarInline(38, 2,  "V", colors[C_VOL], potiToPercent(PIN_VOL_POTI));
+  drawPotiBarInline(38, 13, "B", colors[C_BRI], potiToPercent(PIN_BRI_POTI));
 
-  tft.drawFastHLine(0, 24, 160, MODE_COLORS[currentMode]);
+  tft.drawFastHLine(0, 24, 160, MODE_COLOR);
 
   drawKeyGrid();
 }
@@ -524,8 +539,8 @@ void handlePotis() {
 
   int volDisp = map(sentVol, 0, VOL_MAX_STEPS, 0, 100);
   int briDisp = map(sentBri, 0, BRI_MAX_STEPS, 0, 100);
-  if (volDisp != lastVolDisp) { drawPotiBarInline(38, 2,  "V", ST77XX_MAGENTA, volDisp); lastVolDisp = volDisp; }
-  if (briDisp != lastBriDisp) { drawPotiBarInline(38, 13, "B", 0x07FF,         briDisp); lastBriDisp = briDisp; }
+  if (volDisp != lastVolDisp) { drawPotiBarInline(38, 2,  "V", colors[C_VOL], volDisp); lastVolDisp = volDisp; }
+  if (briDisp != lastBriDisp) { drawPotiBarInline(38, 13, "B", colors[C_BRI], briDisp); lastBriDisp = briDisp; }
 }
 
 // KONFIGURATION IM FLASH
@@ -545,8 +560,16 @@ void loadDefaultKey(int tab, int key) {
   }
 }
 
+void loadColors() {
+  uint16_t stored[NUM_COLORS];
+  bool ok = prefs.isKey("colors")
+            && prefs.getBytes("colors", stored, sizeof(stored)) == sizeof(stored);
+  memcpy(colors, ok ? stored : DEFAULT_COLORS, sizeof(colors));
+}
+
 void loadConfig() {
   prefs.begin("macropad", false);
+  loadColors();
   for (int t = 0; t < NUM_TABS; t++) {
     for (int k = 0; k < NUM_KEYS; k++) {
       loadDefaultKey(t, k);
@@ -574,12 +597,14 @@ bool saveKey(int t, int k) {
 }
 
 // KONFIGURATIONS-PROTOKOLL (Zeilen über USB-Serial)
-//   HELLO                                        -> MACROPAD 2
-//   GET                                          -> TAB ... / KEY ... / END
+//   HELLO                                        -> MACROPAD 3
+//   GET                                          -> TAB ... / KEY ... / COLORS ... / END
 //   STATE                                        -> STATE tab
 //   GAME 1|0                                     -> OK | ERR (nur im HOW-Modus)
 //   SET tab key type mods code icon hold lbl txt -> OK | ERR
 //   NAME tab name                                -> OK | ERR
+//   COLORS c0 ... c12 (RGB565, dezimal)          -> OK | ERR
+//   DEFCOLORS                                    -> OK
 //   RESET                                        -> OK
 // lbl und txt sind Hex-Strings, "-" steht für leer.
 // Von selbst sendet das Pad: EVT TAB tab, EVT KEY key (nur im Spiel)
@@ -648,7 +673,9 @@ void cmdGet() {
       ConfigPort.print("\n");
     }
   }
-  ConfigPort.print("END\n");
+  ConfigPort.print("COLORS");
+  for (int i = 0; i < NUM_COLORS; i++) ConfigPort.printf(" %u", colors[i]);
+  ConfigPort.print("\nEND\n");
 }
 
 bool cmdSet() {
@@ -691,8 +718,31 @@ bool cmdName() {
   return true;
 }
 
+bool cmdColors() {
+  uint16_t next[NUM_COLORS];
+  for (int i = 0; i < NUM_COLORS; i++) {
+    const char* field = strtok(nullptr, " ");
+    if (!field) return false;
+    char* end;
+    long value = strtol(field, &end, 10);
+    if (*end != 0 || value < 0 || value > 0xFFFF) return false;
+    next[i] = value;
+  }
+  if (prefs.putBytes("colors", next, sizeof(next)) != sizeof(next)) return false;
+  memcpy(colors, next, sizeof(colors));
+  drawBaseUI();
+  return true;
+}
+
+void cmdDefaultColors() {
+  prefs.remove("colors");
+  loadColors();
+  drawBaseUI();
+}
+
 void cmdReset() {
   prefs.clear();
+  loadColors();
   const char* names[NUM_TABS] = {"GEN", "EDA", "HOW", "GAM"};
   for (int t = 0; t < NUM_TABS; t++) {
     strcpy(tabNames[t], names[t]);
@@ -704,12 +754,14 @@ void cmdReset() {
 void handleCommand(char* line) {
   const char* cmd = strtok(line, " ");
   if (!cmd) return;
-  if (strcmp(cmd, "HELLO") == 0)      ConfigPort.print("MACROPAD 2\n");
+  if (strcmp(cmd, "HELLO") == 0)      ConfigPort.print("MACROPAD 3\n");
   else if (strcmp(cmd, "STATE") == 0) ConfigPort.printf("STATE %d\n", currentMode);
   else if (strcmp(cmd, "GAME") == 0)  ConfigPort.print(cmdGame() ? "OK\n" : "ERR\n");
   else if (strcmp(cmd, "GET") == 0)   cmdGet();
   else if (strcmp(cmd, "SET") == 0)   ConfigPort.print(cmdSet()  ? "OK\n" : "ERR\n");
   else if (strcmp(cmd, "NAME") == 0)  ConfigPort.print(cmdName() ? "OK\n" : "ERR\n");
+  else if (strcmp(cmd, "COLORS") == 0) ConfigPort.print(cmdColors() ? "OK\n" : "ERR\n");
+  else if (strcmp(cmd, "DEFCOLORS") == 0) { cmdDefaultColors(); ConfigPort.print("OK\n"); }
   else if (strcmp(cmd, "RESET") == 0) { cmdReset(); ConfigPort.print("OK\n"); }
   else ConfigPort.print("ERR\n");
 }

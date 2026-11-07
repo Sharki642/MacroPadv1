@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""MacroPad Manager: change what the 16 keys do on each of the 4 tabs over USB.
+"""MacroPad Manager: change the 16 keys on each of the 4 tabs and the colors of
+the pad's display over USB.
 
 The pad stores everything in its own flash, so this app only needs to run
 while you change something. Needs PySide6 (no other dependencies).
@@ -22,7 +23,7 @@ from PySide6.QtGui import (
     QRegularExpressionValidator,
 )
 from PySide6.QtWidgets import (
-    QAbstractButton, QApplication, QCheckBox, QComboBox, QFileDialog,
+    QAbstractButton, QApplication, QCheckBox, QColorDialog, QComboBox, QFileDialog,
     QFormLayout, QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit,
     QMainWindow, QMessageBox, QProgressBar, QPushButton, QSizePolicy,
     QStackedWidget, QTabBar, QVBoxLayout, QWidget,
@@ -33,7 +34,7 @@ NUM_KEYS = 16
 LABEL_LEN = 5
 MAX_TEXT = 48
 USB_VENDOR = "239a"
-PROTOCOL = "2"
+PROTOCOL = "3"
 HOW_TAB = 2
 ROUND_SECONDS = 30
 HIT_POINTS = 10
@@ -107,6 +108,11 @@ QLabel#bigScore {{ color: {GREEN}; font-size: 64px; font-weight: 800; }}
 QLabel#stat {{ font-size: 16px; }}
 QWidget:disabled {{ color: {MUTED}; }}
 """
+
+# Display colors, same order as ColorSlot in the firmware
+C_VOL, C_BRI, C_TAB = 0, 1, 2
+C_HEADER, C_BG, C_KEY_BG, C_BORDER, C_KEY_TEXT, C_VALUE, C_TRACK = range(6, 13)
+NUM_COLORS = 13
 
 ACT_NONE, ACT_KEY, ACT_TEXT, ACT_RUN, ACT_MEDIA, ACT_MOUSE = range(6)
 ACTION_NAMES = ["Nothing", "Keyboard shortcut", "Type text", "Run program",
@@ -269,6 +275,17 @@ def steps_to_text(steps, table):
     return "".join(reverse.get(tuple(s), "?") for s in steps)
 
 
+def rgb565_to_color(value):
+    """The display has 5/6/5 bits per channel."""
+    return QColor(((value >> 11) & 31) * 255 // 31,
+                  ((value >> 5) & 63) * 255 // 63,
+                  (value & 31) * 255 // 31)
+
+
+def color_to_rgb565(color):
+    return (color.red() >> 3) << 11 | (color.green() >> 2) << 5 | color.blue() >> 3
+
+
 def key_name(usage, lang):
     for code, us, de in KEYS:
         if code == usage:
@@ -392,6 +409,7 @@ class PadLink:
     def read_all(self):
         tabs = [""] * NUM_TABS
         keys = [[None] * NUM_KEYS for _ in range(NUM_TABS)]
+        colors = []
         for line in self.command("GET", lambda r: r == "END", timeout=5.0):
             f = line.split()
             if f[0] == "TAB" and len(f) == 3:
@@ -404,9 +422,12 @@ class PadLink:
                     "label": "" if f[8] == "-" else bytes.fromhex(f[8]).decode("ascii", "replace"),
                     "steps": [[raw[i], raw[i + 1]] for i in range(0, len(raw), 2)],
                 }
-        if not all(tabs) or any(k is None for tab in keys for k in tab):
+            elif f[0] == "COLORS":
+                colors = [int(value) for value in f[1:]]
+        if (not all(tabs) or any(k is None for tab in keys for k in tab)
+                or len(colors) != NUM_COLORS):
             raise PadError("Incomplete answer from the pad.")
-        return tabs, keys
+        return tabs, keys, colors
 
     def write_key(self, tab, key, cfg):
         label = cfg["label"].encode("ascii").hex() or "-"
@@ -416,6 +437,12 @@ class PadLink:
 
     def write_name(self, tab, name):
         self.ok(f"NAME {tab} {name}")
+
+    def write_colors(self, colors):
+        self.ok("COLORS " + " ".join(str(value) for value in colors))
+
+    def reset_colors(self):
+        self.ok("DEFCOLORS")
 
     def reset(self):
         self.ok("RESET")
@@ -810,6 +837,80 @@ class GamePage(QWidget):
         self.stop(f"Round over: {self.score} points" + (" - new best!" if record else ""))
 
 
+class DisplayPage(QWidget):
+    """Every color on the pad's display. A change shows up there right away."""
+
+    def __init__(self, window):
+        super().__init__()
+        self.window_ = window
+        self.swatches = {}
+        self.names = {}
+        self.tab_labels = []
+
+        grid = QGridLayout()
+        grid.setSpacing(10)
+        groups = [
+            ("Volume and brightness", [
+                (C_VOL, "Volume bar"), (C_BRI, "Brightness bar"),
+                (C_TRACK, "Bar background"), (C_VALUE, "Percent text")]),
+            ("Tab colors (name, line and icons)", [
+                (C_TAB + t, window.tabs[t]) for t in range(NUM_TABS)]),
+            ("Keys", [
+                (C_KEY_BG, "Key background"), (C_KEY_TEXT, "Key text"),
+                (C_BORDER, "Borders")]),
+            ("Screen", [
+                (C_BG, "Background"), (C_HEADER, "Tab name background")]),
+        ]
+        for index, (title, slots) in enumerate(groups):
+            box = QGroupBox(title)
+            form = QFormLayout(box)
+            for slot, name in slots:
+                label = QLabel(name)
+                if C_TAB <= slot < C_TAB + NUM_TABS:
+                    self.tab_labels.append(label)
+                swatch = QPushButton()
+                swatch.setMinimumWidth(130)
+                swatch.clicked.connect(lambda _=False, s=slot: self.pick(s))
+                self.swatches[slot] = swatch
+                self.names[slot] = label
+                form.addRow(label, swatch)
+            grid.addWidget(box, index // 2, index % 2)
+
+        bottom = QHBoxLayout()
+        reset_button = QPushButton("Reset colors...")
+        reset_button.setObjectName("danger")
+        reset_button.clicked.connect(window.reset_colors)
+        bottom.addStretch(1)
+        bottom.addWidget(reset_button)
+
+        col = QVBoxLayout(self)
+        col.setContentsMargins(0, 0, 0, 0)
+        col.addLayout(grid)
+        col.addStretch(1)
+        col.addLayout(bottom)
+
+    def refresh(self):
+        colors = self.window_.colors
+        for t, label in enumerate(self.tab_labels):
+            label.setText(self.window_.tabs[t])
+        if colors is None:
+            return
+        for slot, swatch in self.swatches.items():
+            color = rgb565_to_color(colors[slot])
+            ink = "#000000" if color.lightness() > 127 else "#ffffff"
+            swatch.setText(color.name().upper())
+            swatch.setStyleSheet(f"QPushButton {{ background: {color.name()}; color: {ink}; }}")
+
+    def pick(self, slot):
+        window = self.window_
+        color = QColorDialog.getColor(rgb565_to_color(window.colors[slot]), self,
+                                      self.names[slot].text())
+        if color.isValid():
+            colors = list(window.colors)
+            colors[slot] = color_to_rgb565(color)
+            window.write_colors(colors)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, port_override):
         super().__init__()
@@ -818,6 +919,7 @@ class MainWindow(QMainWindow):
         self.tabs = ["GEN", "EDA", "HOW", "GAM"]
         self.pad_tab = None
         self.keys = None
+        self.colors = None
         self.tab = 0
         self.key = 0
         self.loading = False
@@ -878,7 +980,9 @@ class MainWindow(QMainWindow):
         top.addWidget(self.status, 1)
         self.keys_button = QPushButton("Keys")
         self.game_button = QPushButton("Game")
-        for index, button in enumerate((self.keys_button, self.game_button)):
+        self.display_button = QPushButton("Display")
+        for index, button in enumerate((self.keys_button, self.game_button,
+                                        self.display_button)):
             button.setCheckable(True)
             button.setAutoExclusive(True)
             button.clicked.connect(lambda _=False, i=index: self.show_section(i))
@@ -897,6 +1001,8 @@ class MainWindow(QMainWindow):
         self.sections.addWidget(keys_page)
         self.game = GamePage(self)
         self.sections.addWidget(self.game)
+        self.display = DisplayPage(self)
+        self.sections.addWidget(self.display)
 
         tab_row = QHBoxLayout()
         self.tab_bar = QTabBar()
@@ -1078,7 +1184,7 @@ class MainWindow(QMainWindow):
             return
         try:
             self.link = PadLink(port)
-            self.tabs, self.keys = self.link.read_all()
+            self.tabs, self.keys, self.colors = self.link.read_all()
             self.pad_tab = self.link.read_tab()
         except PermissionError:
             self.link = None
@@ -1134,6 +1240,7 @@ class MainWindow(QMainWindow):
         self.editor.setEnabled(online)
         self.tab_bar.setEnabled(online)
         self.tab_name.setEnabled(online)
+        self.display.setEnabled(online)
         for button in self.buttons + self.tools:
             button.setEnabled(online)
         self.game.refresh_state()
@@ -1147,6 +1254,7 @@ class MainWindow(QMainWindow):
             self.refresh_button(i)
         self.buttons[self.key].setChecked(True)
         self.load_editor()
+        self.display.refresh()
 
     def refresh_button(self, i):
         cfg = self.keys[self.tab][i]
@@ -1273,7 +1381,32 @@ class MainWindow(QMainWindow):
             return
         self.tabs[self.tab] = name
         self.tab_bar.setTabText(self.tab, name)
+        self.display.refresh()
         self.saved_label.setText("Saved to the pad")
+
+    def write_colors(self, colors):
+        if not self.link:
+            return
+        try:
+            self.link.write_colors(colors)
+        except PadError as err:
+            self.disconnected(str(err))
+            return
+        self.colors = colors
+        self.display.refresh()
+
+    def reset_colors(self):
+        answer = QMessageBox.question(
+            self, "Reset colors", "Put all display colors back to the defaults?")
+        if answer != QMessageBox.Yes or not self.link:
+            return
+        try:
+            self.link.reset_colors()
+            self.colors = self.link.read_all()[2]
+        except PadError as err:
+            self.disconnected(str(err))
+            return
+        self.display.refresh()
 
     def layout_changed(self, name):
         self.settings.setValue("layout", name)
@@ -1288,7 +1421,8 @@ class MainWindow(QMainWindow):
                                               "JSON (*.json)")
         if path:
             with open(path, "w", encoding="utf-8") as f:
-                json.dump({"tabs": self.tabs, "keys": self.keys}, f, indent=1)
+                json.dump({"tabs": self.tabs, "keys": self.keys,
+                           "colors": self.colors}, f, indent=1)
 
     def import_config(self):
         self.flush()
@@ -1299,13 +1433,17 @@ class MainWindow(QMainWindow):
             with open(path, encoding="utf-8") as f:
                 data = json.load(f)
             tabs, keys = data["tabs"], data["keys"]
-            if len(tabs) != NUM_TABS or any(len(t) != NUM_KEYS for t in keys):
+            colors = data.get("colors")          # missing in older exports
+            if (len(tabs) != NUM_TABS or any(len(t) != NUM_KEYS for t in keys)
+                    or (colors is not None and len(colors) != NUM_COLORS)):
                 raise ValueError
             for t in range(NUM_TABS):
                 self.link.write_name(t, tabs[t])
                 for k in range(NUM_KEYS):
                     self.link.write_key(t, k, keys[t][k])
-            self.tabs, self.keys = self.link.read_all()
+            if colors is not None:
+                self.link.write_colors(colors)
+            self.tabs, self.keys, self.colors = self.link.read_all()
         except (OSError, ValueError, KeyError, TypeError) as err:
             QMessageBox.warning(self, "Import", f"Not a macropad file: {err}")
             return
@@ -1316,13 +1454,13 @@ class MainWindow(QMainWindow):
 
     def reset_config(self):
         answer = QMessageBox.question(
-            self, "Reset", "Put all keys on all 4 tabs back to the defaults?")
+            self, "Reset", "Put all keys, tab names and display colors back to the defaults?")
         if answer != QMessageBox.Yes:
             return
         self.dirty = None
         try:
             self.link.reset()
-            self.tabs, self.keys = self.link.read_all()
+            self.tabs, self.keys, self.colors = self.link.read_all()
         except PadError as err:
             self.disconnected(str(err))
             return
